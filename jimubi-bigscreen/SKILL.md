@@ -300,12 +300,6 @@ field_option = [
 
 用户必须提供 API 地址和 X-Access-Token。
 
-## 源码位置
-
-- 大屏前端 UI 源码：`E:\workspace-cc-jeecg\vue3-jeecg-drag-design-antd4`
-- 大屏后台源码：`E:\workspace-cc-jeecg\jeecg-boot-framework-2026\jeecg-boot-platform\jeecg-boot-module-drag`
-- 管理界面前端：`E:\workspace-cc-jeecg\jeecgboot-vue3-2026\src\views\super\drag\page`
-
 ## 执行效率规则（强制）
 
 ### 简单操作直接执行，禁止多余探索
@@ -1413,7 +1407,7 @@ rm 脚本名.py bi_utils.py
 
 ```python
 import sys, json
-sys.path.insert(0, r'E:\workspace-cc-jeecg\jeecg-boot-framework-2026')
+sys.path.insert(0, '.')
 from bi_utils import *
 import bi_utils
 

@@ -44,12 +44,6 @@ description: Use when user asks to create/design a dashboard (仪表盘/看板),
 1. **API 地址**：JeecgBoot 后端地址（如 `https://api3.boot.jeecg.com`）
 2. **X-Access-Token**：JWT 登录令牌（从浏览器 F12 获取）
 
-## 源码位置
-
-- 仪表盘前端 UI 源码：`E:\workspace-cc-jeecg\vue3-jeecg-drag-design-antd4`
-- 仪表盘后台源码：`E:\workspace-cc-jeecg\jeecg-boot-framework-2026\jeecg-boot-platform\jeecg-boot-module-drag`
-- 管理界面前端：`E:\workspace-cc-jeecg\jeecgboot-vue3-2026\src\views\super\drag\page`
-
 ## 交互流程
 
 ### Step 0: 解析用户需求
@@ -171,24 +165,23 @@ cp "C:/Users/25067/.claude/skills/jimubi-dashboard/references/bi_utils.py" .
 
 ### Step 3: 调用 API 创建仪表盘
 
-**优先使用共通工具库 `bi_utils.py`**（两个位置均有副本）：
-- Skills 目录（权威副本）：`C:\Users\zhang\.claude\skills\jimubi-dashboard\references\bi_utils.py`
-- 后端项目根目录（运行副本）：`E:\workspace-cc-jeecg\jeecg-boot-framework-2026\bi_utils.py`
+**优先使用共通工具库 `bi_utils.py`**：
+- Skills 目录（权威副本）：`references/bi_utils.py`
 
-> 如果后端项目根目录没有 `bi_utils.py`，先从 skills 目录复制过去再使用。
+> 如果工作目录没有 `bi_utils.py`，先从 skills 目录复制过去再使用。
 
 **执行步骤：**
 ```
-1. 确认后端项目根目录有 bi_utils.py（没有则从 skills 复制）
-2. Write 工具 → 写入业务脚本 create_xxx_dashboard.py（项目根目录）
-3. Bash 工具 → cd E:/workspace-cc-jeecg/jeecg-boot-framework-2026 && python create_xxx_dashboard.py
+1. 确认工作目录有 bi_utils.py（没有则从 skills 复制）
+2. Write 工具 → 写入业务脚本 create_xxx_dashboard.py
+3. Bash 工具 → python create_xxx_dashboard.py
 4. Bash 工具 → rm create_xxx_dashboard.py（清理临时脚本）
 ```
 
 **仪表盘创建示例：**
 ```python
 import sys
-sys.path.insert(0, r'E:\workspace-cc-jeecg\jeecg-boot-framework-2026')
+sys.path.insert(0, '.')
 from bi_utils import *
 
 init_api('https://api3.boot.jeecg.com', 'your-token')
@@ -1334,7 +1327,7 @@ recover_page(page_id)               # 恢复
 
 ```python
 import sys, json
-sys.path.insert(0, r'E:\workspace-cc-jeecg\jeecg-boot-framework-2026')
+sys.path.insert(0, '.')
 from bi_utils import *
 import bi_utils
 
@@ -1625,5 +1618,3 @@ save_page(page_id)
 - `references/bi-comp-option-config.md` — 组件样式配置路径
 - `references/bi_utils.py` — 工具库源码
 - `references/templates/default/` — 41 个仪表盘模板 JSON 参考
-- 仪表盘前端 UI 源码：`E:\workspace-cc-jeecg\vue3-jeecg-drag-design-antd4`
-- 仪表盘后台源码：`E:\workspace-cc-jeecg\jeecg-boot-framework-2026\jeecg-boot-platform\jeecg-boot-module-drag`
