@@ -17,13 +17,7 @@
 
 > **前提条件**：需要解决 Claude 官方账号注册、会员订阅及网络访问问题。
 
-**方案二：Claude Code + MiniMax 2.7**
-
-⚠️ 勉强可用。这是无法访问官方模型的无奈选择，能力差距较大，部分 skills 功能会缺失或体验不佳。
-
-> **前提条件**：需要MiniMax AI 开放平台账号， [社区专属9折订阅](https://platform.minimaxi.com/subscribe/token-plan?code=4sOp1aM1Qh&source=link)
-
-**方案三：Claude Code + deepseek-v4-pro**
+**方案二：Claude Code + deepseek-v4-pro**
 
 ✅ Skills 支持很好，国内可直接访问，无需网络处理。
 
@@ -40,12 +34,12 @@
     "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
     "ANTHROPIC_AUTH_TOKEN": "${DEEPSEEK_API_KEY}",
     "API_TIMEOUT_MS": "3000000",
-    "ANTHROPIC_MODEL": "deepseek-v4-pro",
+    "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
     "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-v4-flash",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-pro",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-pro[1m]",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1",
     "CLAUDE_CODE_EFFORT_LEVEL": "max"
@@ -66,14 +60,20 @@
 
 </details>
 
+**方案三：Claude Code + MiniMax 2.7**
+
+⚠️ 勉强可用。这是无法访问官方模型的无奈选择，能力差距较大，部分 skills 功能会缺失或体验不佳。
+
+> **前提条件**：需要MiniMax AI 开放平台账号， [社区专属9折订阅](https://platform.minimaxi.com/subscribe/token-plan?code=4sOp1aM1Qh&source=link)
+
 
 **结论**
 
-优先使用方案一或方案三，方案二为国内无法访问官方时的备选。
+优先使用方案一或方案二，方案三为国内无法访问官方时的备选。
 
 **相关文档：**
 - [Claude Code 下载与安装](https://code.claude.com/docs/zh-CN/quickstart)
-- [MiniMax API 配置（方案二）](https://platform.minimaxi.com/docs/api-reference/text-anthropic-api)
+- [MiniMax API 配置（方案三）](https://platform.minimaxi.com/docs/api-reference/text-anthropic-api)
 - [Deepseek接入Claude Code](https://api-docs.deepseek.com/zh-cn/guides/coding_agents)
 
 ## 功能清单
