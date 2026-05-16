@@ -12,6 +12,7 @@
 | **静态复杂数据** | `data:[[x,y]]` 散点、`value:[...]` 雷达、多系列气泡 → 必须用 `_NONE()`（不绑数据集），否则数据集覆盖 config |
 | **JSON 数据集限制** | JSON 数据集有几条记录，渲染时 config 里的 data 就只剩几条；只适合全量数据存在数据集里的场景 |
 | **初始 series 不能为空** | 所有图表初始 config 的 `series` 必须至少有一条含 `itemStyle` 的占位，禁止 `"series":[]` |
+| **virtualCellRange 只放第一行锚点** | `[[ROW, c] for c in range(COL, COL+COLSPAN)]`，禁止填全部 rowspan 行；rows 也只写锚点行，行高=图表像素高度；多填会让引擎把空行渲染为实际内容，把图表推到下方 |
 
 ---
 

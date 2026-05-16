@@ -114,7 +114,7 @@ CHART_TYPES = {
 # 单值自定义渲染图表：option.color 必须是 string，写 array 会 fallback 到默认色
 # （与 ECharts 类不同——ECharts 把 color 数组当作 palette 轮询，这些组件直接当颜色值读）
 # 判断依据：defaults/<Type>.json 中 option.color 默认就是 string
-STRING_COLOR_TYPES = {'JRingProgress', 'JLiquid'}
+STRING_COLOR_TYPES = {'JRingProgress', 'JLiquid', 'JScrollRankingBoard'}
 
 
 # ============================================================

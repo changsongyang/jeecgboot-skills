@@ -158,12 +158,19 @@ def mock_url(path):
 # ── 命令实现 ───────────────────────────────────────────────────────────────────
 
 def _resolve_body(body=None, body_file=None, template=None):
-    """三选一解析 res_body。返回 JSON 字符串，或 None 表示参数缺失。"""
+    """三选一解析 res_body。返回 JSON 字符串，或 None 表示参数缺失。
+
+    body 防呆（实测 2026-05-13）：YApi 后端要求 res_body 是 string，但 batch 文件里
+    AI 直觉会写成 JSON 数组/对象。检测 dict/list 自动 json.dumps，避免每次都报
+    "请求参数 data.res_body 应当是 string 类型"。
+    """
     if template:
         if template not in TEMPLATES:
             raise ValueError(f'未知模板: {template}，可用: {list(TEMPLATES.keys())}')
         return json.dumps(TEMPLATES[template], ensure_ascii=False)
     if body:
+        if isinstance(body, (dict, list)):
+            return json.dumps(body, ensure_ascii=False)
         return body
     if body_file:
         with open(body_file, 'r', encoding='utf-8') as f:
@@ -208,12 +215,20 @@ def _create_mock_once(title, res_body, path=None, ts_suffix=None):
         return None, None, f'errcode={r.get("errcode")} {errmsg}'
 
     # 已存在：查 id → 复用 + 更新 res_body
-    lr = _req('GET', '/api/interface/list',
-              params={'project_id': PROJ_ID, 'page': 1, 'limit': 200})
+    # 翻页查找（实测 2026-05-13）：项目接口数超过单页 limit 时，单页查不到会误报
+    # "接口已存在但未找到 id"。逐页扫描直到命中或扫完，最多 10 页（5000 条上限）。
     iid = None
-    for it in ((lr.get('data') or {}).get('list') or []):
-        if it.get('path') == iface_path and (it.get('method') or '').upper() == 'GET':
-            iid = it.get('_id')
+    for page_idx in range(1, 11):
+        lr = _req('GET', '/api/interface/list',
+                  params={'project_id': PROJ_ID, 'page': page_idx, 'limit': 500})
+        page_list = (lr.get('data') or {}).get('list') or []
+        if not page_list:
+            break
+        for it in page_list:
+            if it.get('path') == iface_path and (it.get('method') or '').upper() == 'GET':
+                iid = it.get('_id')
+                break
+        if iid:
             break
     if not iid:
         return None, None, f'接口已存在但未找到 id: path={iface_path}'

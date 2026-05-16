@@ -276,17 +276,29 @@ def cmd_show(args):
 
 
 def cmd_add_linkage(args):
-    """添加联动配置"""
+    """添加联动配置。
+
+    定位方式（实测 2026-05-13）：优先按 --source-id / --target-id 找（comp['i']），
+    回退到 --source / --target（componentName）。原因：spec_builder 部分 handler 把
+    title 覆盖 componentName，JSelectRadio / JStatsSummary / JScrollTable 默认 name 为空，
+    按 name 找会全失败；按 i 找稳定。
+    """
     tmpl = load_template(args.page_id)
 
-    source_comp = find_comp_by_name(tmpl, args.source)
+    src_id = getattr(args, 'source_id', None)
+    tgt_id = getattr(args, 'target_id', None)
+    source_comp = find_comp_by_i(tmpl, src_id) if src_id else None
+    if not source_comp and args.source:
+        source_comp = find_comp_by_name(tmpl, args.source)
     if not source_comp:
-        print(f'未找到源组件: {args.source}')
+        print(f'未找到源组件: source_id={src_id}, source={args.source}')
         return
 
-    target_comp = find_comp_by_name(tmpl, args.target)
+    target_comp = find_comp_by_i(tmpl, tgt_id) if tgt_id else None
+    if not target_comp and args.target:
+        target_comp = find_comp_by_name(tmpl, args.target)
     if not target_comp:
-        print(f'未找到目标组件: {args.target}')
+        print(f'未找到目标组件: target_id={tgt_id}, target={args.target}')
         return
 
     target_i = target_comp.get('i', '')
@@ -464,8 +476,13 @@ def main():
     # add-linkage
     p_add_lk = subparsers.add_parser('add-linkage', help='添加联动配置')
     add_common(p_add_lk)
-    p_add_lk.add_argument('--source', required=True, help='源组件名称')
-    p_add_lk.add_argument('--target', required=True, help='目标组件名称')
+    p_add_lk.add_argument('--source', default=None, help='源组件名称（或用 --source-id）')
+    p_add_lk.add_argument('--target', default=None, help='目标组件名称（或用 --target-id）')
+    p_add_lk.add_argument('--source-id', default=None, dest='source_id',
+                          help='源组件 i 值（comp_ops.py list 拿到，优先于 --source。'
+                               '用于 componentName 为空或被 title 覆盖时的稳定定位）')
+    p_add_lk.add_argument('--target-id', default=None, dest='target_id',
+                          help='目标组件 i 值（优先于 --target）')
     p_add_lk.add_argument('--mapping', action='append', required=True,
                            help='字段映射，格式: src=tgt（可多次使用，或逗号分隔如 name=name,value=keyword）')
 

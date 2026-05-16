@@ -199,6 +199,238 @@ merges = result["merges"]
 
 ---
 
+# 定时导出任务接口
+
+## 接口
+
+**POST** `/jmreport/auto/export/job/save`
+
+## 请求参数
+
+```json
+{
+    "id": "",
+    "name": "任务名称",
+    "beginTime": "2026-05-07 00:00:00",
+    "execInterval": "0 0 8 * * ?",
+    "endTime": "2026-06-07 00:00:00",
+    "exportReports": [
+        {
+            "reportId": "报表ID",
+            "exportType": "PDF",
+            "params": {},
+            "sheetId": "default",
+            "name": "报表显示名",
+            "tableIndex": 1
+        }
+    ],
+    "emailSend": true,
+    "receiverEmail": "xxx@qq.com",
+    "isSyncFile": false,
+    "fileSyncPath": "",
+    "reportConf": "<exportReports 的 JSON 字符串>"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `id` | **空字符串 = 新建；传已有任务 ID = 修改**（创建与修改共用同一接口） |
+| `execInterval` | 标准 Cron 表达式（6 位，含秒），如 `0 0/5 * * * ?` 每 5 分钟 |
+| `exportType` | `PDF` / `EXCEL` / `WORD` |
+| `sheetId` | 固定传 `"default"` |
+| `tableIndex` | 报表在任务中的顺序（从 1 开始） |
+| `emailSend` | `true` = 完成后邮件通知 |
+| `isSyncFile` | `true` = 同步导出文件到 `fileSyncPath` 路径 |
+| `reportConf` | `exportReports` 的 JSON 字符串（与 `exportReports` 数组内容必须保持一致） |
+
+## 响应
+
+```json
+{"success": true, "message": "", "code": 200, "result": null, "timestamp": 1778148973808}
+```
+
+> ⚠️ **`result` 为 null**，接口不返回新建任务的 ID。若需要任务 ID，创建后调 `list_export_jobs()` 按名称查询。
+
+## Python 调用
+
+```python
+from report_export import schedule_export_job
+
+schedule_export_job(
+    base_url="http://host:port/jeecgboot/jmreport",
+    token="xxx",
+    name="每日报表导出",
+    exec_interval="0 0 8 * * ?",   # 每天 8 点
+    begin_time="2026-05-07 00:00:00",
+    end_time="2026-06-07 00:00:00",
+    export_reports=[
+        {"reportId": "xxx1", "exportType": "PDF",   "name": "学校信息统计"},
+        {"reportId": "xxx2", "exportType": "EXCEL",  "name": "员工信息表"},
+        {"reportId": "xxx3", "exportType": "WORD",   "name": "员工信息报表"},
+    ],
+    email_send=True,
+    receiver_email="xxx@qq.com",
+)
+```
+
+## CLI
+
+```bash
+python report_export.py schedule-export \
+  --base-url http://host:port/jeecgboot/jmreport \
+  --token TOKEN \
+  --name "每日报表导出" \
+  --reports '[{"reportId":"xxx1","exportType":"PDF","name":"学校信息统计"},{"reportId":"xxx2","exportType":"EXCEL","name":"员工信息表"}]' \
+  --cron "0 0 8 * * ?" \
+  --begin "2026-05-07 00:00:00" \
+  --end "2026-06-07 00:00:00" \
+  --email "xxx@qq.com"
+```
+
+---
+
+# 定时导出任务列表查询接口
+
+## 接口
+
+**GET** `/jmreport/auto/export/job/query`
+
+> ⚠️ 接口路径是 `/query`，**不是** `/list`——`/list` 会返回 404。
+
+## 请求参数
+
+| 参数 | 说明 |
+|------|------|
+| `pageNo` | 页码，从 1 开始 |
+| `pageSize` | 每页条数，默认 50 |
+| `token` | 用户 token |
+
+## 响应字段
+
+每项包含 `id`、`name`、`status`（1=运行中/0=已停止）、`execInterval`、`beginTime`、`endTime`、`createTime`。
+
+## Python 调用
+
+```python
+from report_export import list_export_jobs
+
+list_export_jobs(base_url, token, name="关键词")  # name 可省略，省略则列出全部
+```
+
+## CLI
+
+```bash
+python report_export.py job-list [--name 关键词] --base-url URL --token TOKEN
+```
+
+---
+
+# 定时导出任务删除接口
+
+## 接口
+
+**DELETE** `/jmreport/auto/export/job/delete?id={jobId}`
+
+> ⚠️ **必须先停止任务再删除**：对运行中（status=1）的任务直接删除会返回 code:500。`delete_export_job()` 已内置"先停止后删除"逻辑，直接调用即可。
+
+## 响应
+
+```json
+{"success": true, "message": "删除成功！", "code": 200, "result": null}
+```
+
+## Python 调用
+
+```python
+from report_export import delete_export_job
+
+delete_export_job(base_url, token, job_id="任务ID")
+```
+
+## CLI
+
+```bash
+python report_export.py job-delete <job_id> --base-url URL --token TOKEN
+```
+
+---
+
+# 定时导出任务立即执行接口
+
+## 接口
+
+**GET** `/jmreport/auto/export/job/run/{jobId}`
+
+## 说明
+
+不等待 Cron 周期，立即触发一次导出任务执行。`result` 返回本次执行的**批次号**，可用于后续查询执行记录。
+
+## 响应
+
+```json
+{"success": true, "message": "导出报表成功", "code": 200, "result": "20260507200649ShJ26W"}
+```
+
+## Python 调用
+
+```python
+from report_export import run_export_job_now
+
+run_export_job_now(base_url, token, job_id="任务ID")
+# 输出: 任务 xxx 立即执行成功
+#       执行批次号: 20260507200649ShJ26W
+```
+
+## CLI
+
+```bash
+python report_export.py job-run <job_id> --base-url URL --token TOKEN
+```
+
+---
+
+# 定时导出任务状态接口（启动/停止）
+
+## 接口
+
+**POST** `/jmreport/auto/export/job/status/update`
+
+## 请求参数
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 定时导出任务 ID |
+| `status` | int | `1` = 启动，`0` = 停止 |
+
+启动：`{"id": "任务ID", "status": 1}`  
+停止：`{"id": "任务ID", "status": 0}`
+
+## 响应
+
+```json
+{"success": true, "message": "", "code": 200, "result": null}
+```
+
+## Python 调用
+
+```python
+from report_export import update_export_job_status
+
+update_export_job_status(base_url, token, job_id="任务ID", status=1)  # 启动
+update_export_job_status(base_url, token, job_id="任务ID", status=0)  # 停止
+```
+
+## CLI
+
+```bash
+# 启动
+python report_export.py job-start <job_id> --base-url URL --token TOKEN
+# 停止
+python report_export.py job-stop  <job_id> --base-url URL --token TOKEN
+```
+
+---
+
 # 报表配置导出/导入接口（官方平台格式，可跨环境迁移）
 
 > 与 Excel 模板导入（视觉布局）、Excel/PDF/Word 业务数据导出**完全不同的一对接口**：用于把整张报表（含数据集、参数、布局、图表、增强等所有配置）打成一个 .json 文件，方便备份或跨环境迁移。

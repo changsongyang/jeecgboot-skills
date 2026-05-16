@@ -13,15 +13,20 @@ cfg['linkType'] = 'comp'           # 必须设为 'comp'
 cfg['linkageConfig'] = [
     {
         'linkageId': '目标组件的i值',
+        # ⚠️ linkage 与 linkageField 是同一组数据的两份视图，必须双写：
+        #   linkage      → UI 设计器「映射字段→接受参数」表格读这个；缺失则面板表格空
+        #   linkageField → 运行时执行联动数据流读这个；缺失则点击不刷新
         'linkage': [
-            {
-                'source': 'name',      # 点击时获取的字段
-                'target': 'name'       # 传给目标组件的参数名
-            }
-        ]
+            {'source': 'name', 'target': 'region'}    # source=点击取的字段, target=参数名
+        ],
+        'linkageField': [
+            {'filed': 'name', 'mapping': 'region'}    # filed=source 同义, mapping=target 同义
+        ],
     }
 ]
 ```
+
+> **🚨 双写铁律（实测 2026-05-07）**：`linkage_ops.py add-linkage` 已自动双写；`multi_chart_linkage.py` 与自定义脚本只写 `linkageField` → 数据库持久化成功，运行时联动也工作，但**进入设计器打开「联动配置」面板，映射字段表格是空的**（用户截图反馈：源饼图联动配置面板只显示"联动组件"下拉，下方表格区无行）。补救：query_page → 给每个 linkageConfig entry 加一份对称的 `linkage:[{source:filed.value, target:mapping.value}]` → save_page，幂等。
 
 ### ⚠️ UI 可见性前置：源组件必须有 `fieldOption`
 

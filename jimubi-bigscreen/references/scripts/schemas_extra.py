@@ -34,13 +34,23 @@ EXTRA_SCHEMAS = {
     },
     'JScrollTable': {
         'category': '滚动表格（自定义样式）',
-        'spec_fields': 'data<array of object>, option.fieldMapping[*].key, headerBgColor / headerFontColor / bodyFontColor / borderColor / evenColor / oddColor',
+        'spec_fields': 'data<array of object>, option.fieldMapping[*]{name,key,width<int>}, headerBgColor / headerFontColor / bodyFontColor / borderColor / evenColor / oddColor',
         'pitfalls': [
             '⚠️ 数据绑定走 option.fieldMapping[*].key（B.5）',
             '和 JScrollBoard 区别：本组件样式自由度高（边框/字号/条纹颜色全可改），JScrollBoard 是 DataV 固定风格',
+            '🚨 **fieldMapping[*].width 必须是数字像素（如 120），不接受百分比字符串 "40%"**。'
+            '百分比写法会被识别为无效后 fallback 默认 0，多列一起塌缩看着像列错位。'
+            '推荐用法：固定列写整数像素，让 1 列用 width=0 自动撑满剩余空间。spec_builder 已自动把字符串 width 转为 0 + 警告（2026-05-12）',
+            '🚨 **fieldMapping[*] 不支持按列字色字段**——平台没有 fontColor / color / textStyle 这些字段。'
+            'AI 易按 JScrollList 的习惯每列写 fontColor → 静默失效。全表字色统一写 option.bodyFontColor。'
+            'spec_builder 已自动删除每列 fontColor + 警告（2026-05-12）',
+            '🚨 **oddColor / evenColor / borderColor 写 #RRGGBBAA 带 alpha** → 斑马纹/边框近乎不可见，表格"看着没条纹"。'
+            '建议不透明 #RRGGBB（参考值：oddColor=#0a2540 / evenColor=#0e3052 / borderColor=#1890ff / headerBgColor=#194f97）',
+            '🚨 **scrollTime 硬编码 50ms** 前端 Vue 组件不读 option 覆盖，写其它值无效（实测 2026-04-27）',
+            '🚨 **滚动触发条件**：数据行数 > 可视行数（≈ h / lineHeight）才滚，mock 数据条数建议 ≥ 可视行数 × 1.5',
         ],
         'selection': '需要高度自定义样式的数据表格（边框/字号/条纹）；DataV 固定风格用 JScrollBoard；静态表格用 JCommonTable',
-        'passthrough': True,
+        'passthrough': False,
     },
     'JCardScroll': {
         'category': '卡片滚动',
@@ -158,12 +168,12 @@ EXTRA_SCHEMAS = {
     },
     'JColorBlock': {
         'category': '彩色数字块',
-        'spec_fields': 'data:[{prefix,suffix,backgroundColor,value}], option.card, color, fontSize, fontWeight, decimals, borderSplitx, borderSplity',
+        'spec_fields': 'data:[{prefix,suffix,backgroundColor,value}], option.card, option.lineNum, color, fontSize, fontWeight, decimals, borderSplitx, borderSplity',
         'pitfalls': [
             '数据绑定走顶层 dataMapping（A 类型）filed=[前缀, 后缀, 背景色, 数值]',
-            '支持多块并排展示（lineNum 配置每行块数）',
+            '🚨 24 栅格强约束（源码 colorBlock.vue:122-124 `span=ceil(24/lineNum)`）：数据项数必须 = lineNum 且能整除 24，否则折行错位。KPI 行实用项数 ∈ {2, 3, 4, 6, 8}（4-6 最饱满）；5/7/9-11/13-23 项 → 折成 4+1 / 6+1 / 8+1 等不规则布局 → 项数不在白名单时改用 JStatsSummary',
         ],
-        'selection': '带背景色块的强调数字（如"销售总额 12345 元"）；纯 KPI 卡带对比用 JStatsSummary；翻牌动效用 JCountTo；纯数字用 JNumber',
+        'selection': '色块化 KPI 卡：每项 prefix+value+suffix 配独立 backgroundColor，option.lineNum 控制每行块数。**与 JStatsSummary 同为大屏顶部 KPI 行（≥3 项并排）的两大候选**——本组件长板：色块强视觉冲击、可语义化配色（红/橙=警示、绿=正向、蓝/青=中性），监控/驾驶舱场景首选；JStatsSummary 长板：自带环比/同比对比+涨跌箭头，需要对比数据时首选。**🚨 项数限制：源码用 Antd 24 栅格渲染（span=ceil(24/lineNum)），数据项数必须 = lineNum 且能整除 24 才视觉饱满 → 实用项数仅 {2,3,4,6,8}（4-6 最佳）；5/7/9-11/13-23 项会折行错位（5 项→4+1、7 项→6+1）→ 改用 JStatsSummary（任意项数都正常排版）**。单个色块强调数字（如"销售总额 12345 元"，lineNum=1）也行；翻牌动效用 JCountTo；纯静态数字用 JNumber',
         'passthrough': True,
     },
 

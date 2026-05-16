@@ -269,6 +269,15 @@ def handle_JScrollList(c, p):
       · option.header.color   → 平台真实字段是 fontColor（写错→表头字色失效）
       · fieldMapping[*].textStyle.color → 同上 fontColor（每列单元格字色）
     检测到这三种写法时自动转换并打印警告，让组件能正常渲染。
+
+    width 防呆（实测 2026-05-13）：fieldMapping[*].width 是**数字像素**（不是百分比字符串）。
+    平台规则：
+      · width > 0 → 该列固定为 N 像素
+      · width = 0 → 该列自动填充剩余宽度（其他列定宽后均分剩余空间）
+      · 所有列 width 全 0 → 按列数均分容器宽度
+    AI 易按 Bootstrap/Antd 习惯写 "50%"/"25%" → 平台只认数字，字符串被识别为无效后 fallback 0，
+    若仅一列写百分比 + 其他列定宽，会得到意外的"自动列吞掉剩余宽度"效果。
+    自动修正：检测字符串 width → 改为 0（自动均分），并打印警告。
     """
     variant = str(c.get('variant', '')).strip()
     cand = f'JScrollList_{variant}' if variant else 'JScrollList'
@@ -283,6 +292,7 @@ def handle_JScrollList(c, p):
     opt = cfg.setdefault('option', {})
     name_alias_hits = []
     color_alias_hits = []
+    width_str_hits = []
     cols = opt.get('fieldMapping') or []
     for idx, col in enumerate(cols):
         if not isinstance(col, dict):
@@ -290,6 +300,10 @@ def handle_JScrollList(c, p):
         if 'label' in col and 'name' not in col:
             col['name'] = col.pop('label')
             name_alias_hits.append(idx)
+        w = col.get('width')
+        if isinstance(w, str):
+            width_str_hits.append(f'fieldMapping[{idx}].width="{w}"')
+            col['width'] = 0
         col.setdefault('textAlign', 'center')
         ts = col.setdefault('textStyle', {})
         if 'color' in ts and 'fontColor' not in ts:
@@ -307,9 +321,74 @@ def handle_JScrollList(c, p):
     if color_alias_hits:
         print(f'⚠️ JScrollList 字段名兼容：{color_alias_hits} 中 color 已自动改写为 fontColor '
               f'（平台真实字段是 fontColor）')
+    if width_str_hits:
+        print(f'⚠️ JScrollList 防呆：{width_str_hits} 是字符串/百分比无效，已改为 0（自动填充剩余宽度）；'
+              f'width 是数字像素，0=自动填充，全 0=均分。参考 references/scroll-list-option-config.md')
     if 'commonOption' in c:
         cfg.setdefault('commonOption', {}).update(c['commonOption'])
     return cand, cfg
+
+
+def handle_JScrollTable(c, p):
+    """
+    JScrollTable passthrough 修正（实测 2026-05-12）：
+
+    AI 易踩四个坑（参考 comp-group-tables.md §JScrollTable 与 §踩坑 #160）：
+      · fieldMapping[*].width 写成 "40%" 等百分比字符串 → 平台只认数字像素，
+        百分比会被识别为无效后 fallback 默认 0，多列时一起塌缩看着像列错位
+        自动修正：检测字符串 width → 改为 0（自动均分），并打印警告
+      · fieldMapping[*].fontColor → JScrollTable 没有按列字色字段，全表只有
+        option.bodyFontColor。AI 常按 JScrollList 习惯写每列 fontColor → 静默失效
+        自动修正：删除每列 fontColor，并打印警告引导改写 option.bodyFontColor
+      · oddColor / evenColor / borderColor 写带 alpha 的 #RRGGBBAA →
+        斑马纹/边框近乎透明，表格看着像没条纹/无边框
+        检测到 8 位带 alpha → 打印警告（不强改，留给用户决定）
+      · scrollTime 写非 50 的值 → 前端 Vue 组件硬编码 50ms 间隔，写其它值无效
+        打印 info 提示一次，不改值（不影响渲染）
+    """
+    cfg = load_def('JScrollTable')
+    if 'data' in c:
+        cfg['chartData'] = c['data']  # passthrough：list 直接挂 chartData（无需 json.dumps）
+    if 'option' in c:
+        cfg.setdefault('option', {}).update(c['option'])
+    opt = cfg.setdefault('option', {})
+
+    width_str_hits = []
+    fontcolor_hits = []
+    cols = opt.get('fieldMapping') or []
+    for idx, col in enumerate(cols):
+        if not isinstance(col, dict):
+            continue
+        # width 字符串 → 0（自动均分）
+        w = col.get('width')
+        if isinstance(w, str):
+            width_str_hits.append(f'fieldMapping[{idx}].width="{w}"')
+            col['width'] = 0
+        # 删按列 fontColor（JScrollTable 不支持）
+        if 'fontColor' in col:
+            fontcolor_hits.append(f'fieldMapping[{idx}].fontColor')
+            col.pop('fontColor', None)
+
+    # alpha 颜色警告（不强改）
+    def _has_alpha(v):
+        return isinstance(v, str) and v.startswith('#') and len(v) == 9
+    alpha_hits = [k for k in ('oddColor', 'evenColor', 'borderColor') if _has_alpha(opt.get(k))]
+
+    if width_str_hits:
+        print(f'⚠️ JScrollTable 防呆：{width_str_hits} 是百分比字符串无效，已改为 0（自动均分）；'
+              f'固定列宽请用整数像素如 120，让 1 列用 0 自动撑满剩余空间')
+    if fontcolor_hits:
+        print(f'⚠️ JScrollTable 防呆：{fontcolor_hits} 不支持按列字色，已删除；'
+              f'需要全表字色请写 option.bodyFontColor')
+    if alpha_hits:
+        print(f'⚠️ JScrollTable 提醒：{alpha_hits} 用了 8 位 #RRGGBBAA 颜色（带 alpha 透明），'
+              f'会让斑马纹/边框近乎不可见。建议用不透明 #RRGGBB（如 oddColor=#0a2540 / evenColor=#0e3052 / borderColor=#1890ff）')
+    if 'scrollTime' in opt and opt['scrollTime'] != 50:
+        print(f'ℹ️ JScrollTable 说明：scrollTime={opt["scrollTime"]} 不生效——前端硬编码 50ms 滚动间隔（实测 2026-04-27）')
+
+    if 'commonOption' in c:
+        cfg.setdefault('commonOption', {}).update(c['commonOption'])
+    return 'JScrollTable', cfg
 
 
 def handle_JStatsSummary(c, p):
@@ -400,13 +479,18 @@ def handle_JScrollRankingBoard(c, p):
     d = load_def('JScrollRankingBoard')
     # chartData: [{name, value}] — auto sort desc
     d['chartData'] = json.dumps(c['data'], ensure_ascii=False)
+    # option.color 必须是单色字符串（进度条颜色），传 list 会让 ECharts 报
+    # "Color: Invalid Input of #a,#b" → 兼容旧 spec 传 list 时取首色
+    _rk_color = c.get('color', p['subtitle'])
+    if isinstance(_rk_color, (list, tuple)):
+        _rk_color = _rk_color[0] if _rk_color else p['subtitle']
     d['option'].update({
         'rowNum':    c.get('rowNum', 10),
         'waitTime':  c.get('waitTime', 2000),
         'carousel':  c.get('carousel', 'single'),
         'sort':      c.get('sort', True),
         'fontSize':  c.get('fontSize', 14),
-        'color':     c.get('color', [p['subtitle'], p['title']]),
+        'color':     _rk_color,
         'textColor': c.get('textColor', p['label']),
     })
     return 'JScrollRankingBoard', d
@@ -861,6 +945,7 @@ SPECIAL_HANDLERS = {
     'JAntvGauge':          handle_JAntvGauge,
     'JLiquid':             handle_JLiquid,
     'JScrollList':         handle_JScrollList,
+    'JScrollTable':        handle_JScrollTable,
 }
 
 
@@ -900,6 +985,22 @@ def compile_component(c, palette):
                       f'（spec h={h}）。'
                       f'下方组件 y 建议 ≥ {_y + _eff_h + 10}，'
                       f'或将 spec h 改为 {_eff_h}')
+        if t == 'JColorBlock':
+            # 24 栅格强约束（colorBlock.vue:122-124 `span = ceil(24/lineNum)`）：
+            # 数据项数必须能整除 24 才视觉饱满；否则折行错位（5 项→4+1、7 项→6+1）。
+            # 实用 KPI 行项数 ∈ {2,3,4,6,8}（4-6 最佳），其余建议改 JStatsSummary。
+            _n_blocks = len(c.get('data', []))
+            _GRID_OK  = {1, 2, 3, 4, 6, 8, 12, 24}
+            if _n_blocks > 0 and _n_blocks not in _GRID_OK:
+                _label    = c.get('title') or c.get('name', '')
+                _line_num = (c.get('option') or {}).get('lineNum', _n_blocks)
+                _span     = -(-24 // _line_num) if _line_num else 0  # ceil(24/lineNum)
+                _per_row  = 24 // _span if _span else 0
+                _wrap     = f'{_per_row}+{_n_blocks - _per_row}' if _per_row and _n_blocks > _per_row else f'{_n_blocks}'
+                print(f'⚠️  JColorBlock "{_label}": {_n_blocks} 项不能整除 24（实际折成 {_wrap}，'
+                      f'lineNum={_line_num} → span={_span}）→ 视觉错位。'
+                      f'KPI 行实用项数 ∈ {{2,3,4,6,8}}（4-6 最佳）；'
+                      f'当前项数请改用 JStatsSummary（任意项数都正常排版）')
 
     if t in SPECIAL_HANDLERS:
         comp_key, cfg = SPECIAL_HANDLERS[t](c, palette)
@@ -1197,8 +1298,11 @@ SCHEMAS = {
     },
     'JScrollRankingBoard': {
         'category': '排行榜 · DataV 风格',
-        'spec_fields': 'data:[{name, value<number>}], rowNum, sort, color:[启色,终色], textColor, carousel("single"|"page")',
-        'pitfalls': ['value 必须是数字，自动降序；若需要描述性字符串 value，改用 JCapsuleChart 搭配 unit'],
+        'spec_fields': 'data:[{name, value<number>}], rowNum, sort, color<进度条单色>, textColor, carousel("single"|"page")',
+        'pitfalls': [
+            'value 必须是数字，自动降序；若需要描述性字符串 value，改用 JCapsuleChart 搭配 unit',
+            '⚠️ option.color 是**单色字符串**（进度条颜色，默认 #1370fb），不要传数组 — ECharts 拿到 list 会报 "Color: Invalid Input of #a,#b"（实测 2026-05-13）。handler 已兼容 list 输入自动取首色',
+        ],
         'selection': '大屏唯一可用的排行榜组件。固定"名次+名称+数值"3 列；胶囊进度条样式用 JCapsuleChart',
     },
     'JColorGauge': {

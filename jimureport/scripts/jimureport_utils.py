@@ -7,7 +7,7 @@ jimureport_utils.py — 向后兼容的全量导出
   jimureport_report.py      make_designer、base_save、get_report、report_urls、print_summary
   jimureport_styles.py      make_styles
   jimureport_chart.py       chart_entry、virtual_row、build_chart_layout、update_chart_config、parallel_fill_charts
-  jimureport_link.py        create_link、parallel_create_links
+  jimureport_link.py        create_link、parallel_create_links、save_mastersub_link
   jimureport_datasource.py  resolve_db_source、ensure_datasource、find_datasource、get_ds_connection、query_mysql
 """
 from jimureport_core import (
@@ -22,12 +22,12 @@ from jimureport_report import (
     report_urls, make_designer, base_save, get_report,
     parallel_init_and_parse, print_summary,
 )
-from jimureport_styles import make_styles
+from jimureport_styles import make_styles, STYLE_BASE, STYLE_DATA, STYLE_HEADER, STYLE_TITLE, STYLE_LINK
 from jimureport_chart import (
     chart_entry, virtual_row, build_chart_layout,
     update_chart_config, parallel_fill_charts,
 )
-from jimureport_link import create_link, parallel_create_links
+from jimureport_link import create_link, parallel_create_links, save_mastersub_link
 from jimureport_datasource import (
     resolve_db_source, find_datasource, ensure_datasource, get_ds_connection, query_mysql,
     execute_ds,
@@ -40,7 +40,7 @@ __all__ = [
     "parallel_parse_sqls", "parallel_save_dbs", "parallel_parse_apis",
     "report_urls", "make_designer", "base_save", "get_report",
     "parallel_init_and_parse", "print_summary",
-    "make_styles",
+    "make_styles", "STYLE_BASE", "STYLE_DATA", "STYLE_HEADER", "STYLE_TITLE", "STYLE_LINK",
     "chart_entry", "virtual_row", "build_chart_layout",
     "update_chart_config", "parallel_fill_charts",
     "create_link", "parallel_create_links",

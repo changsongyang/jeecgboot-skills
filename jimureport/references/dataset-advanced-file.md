@@ -2,6 +2,24 @@
 
 # 数据集进阶：文件数据集
 
+## 前置：用户未提供文件时自动创建
+
+用户未给文件路径时，根据其描述的字段和数据自动创建文件，再走上传流程。
+
+**完整流程**：理解用户数据需求 → 创建文件 → 上传 → 创建文件数据集 → 获取 dbCode → 构建报表
+
+**文件格式选择**（无偏好时优先 JSON，不需要第三方库）：
+
+| 格式 | 适用场景 |
+|------|---------|
+| JSON | 默认选择，`json` 标准库直接写，无依赖 |
+| CSV | 用户明确要求或数据量大 |
+| Excel | 用户明确要求 Excel，使用 `openpyxl`（`pip install openpyxl`） |
+
+**标题行命名约束**：只允许字母、汉字、数字、下划线，**不支持空格/短横线/括号等特殊字符**。
+
+---
+
 通过上传 Excel/CSV 文件创建数据集。分为**单文件数据集**（dbType="6"）和**多文件数据集**（dbType="5"）两种。
 
 | 类型 | dbType | 创建数据集方式 | 特点 |
@@ -141,18 +159,33 @@ result = api_request('/jmreport/source/dataset/files/single/save', save_data)
 
 ### Step 3.1: 获取生成的 dbCode
 
-创建后需通过 field/tree 获取后端生成的 dbCode：
+创建后需通过 field/tree 获取后端生成的 dbCode。
+
+**⚠️ 单文件数据集（dbType=6）children 字段结构与 SQL 数据集不同：**
+- 没有 `fieldName` key（用 SQL 数据集习惯写 `child['fieldName']` 会 KeyError）
+- 绑定名取 `child['title']`（拼音，如 `xing_ming`）
+- 中文显示名取 `child['fieldText']`（如 `姓名`）
+- 绑定写法：`#{file_yuan_gong_xin_xi.xing_ming}`
 
 ```python
-tree = api_request(f'/jmreport/field/tree/{report_id}')
+tree = session.get(f'/field/tree/{report_id}')
+db_code = None
+field_names = []   # 拼音，用于 #{dbCode.xxx} 绑定
+field_texts = []   # 中文，用于表头显示
+
 for group in tree.get('result', []):
-    if group:
-        info = group[0] if isinstance(group, list) else group
-        if info.get('type') == '6':  # 文件数据集
-            db_code = info['code']
-            db_id = info['dbId']
-            fields = [c['fieldText'] for c in info.get('children', [])]
-            print(f'dbCode={db_code}, fields={fields}')
+    items = group if isinstance(group, list) else [group]
+    for item in items:
+        if str(item.get('type', '')) == '6':  # 单文件数据集
+            db_code = item['code']
+            for child in item.get('children', []):
+                field_names.append(child['title'])               # ✅ 用 title，不是 fieldName
+                field_texts.append(child.get('fieldText', child['title']))
+            break
+    if db_code:
+        break
+
+# 绑定示例：f"#{{{db_code}.{field_names[0]}}}"  →  #{file_yuan_gong_xin_xi.xing_ming}
 ```
 
 ### Step 3.2: 查看文件数据集详情
@@ -182,7 +215,21 @@ for group in tree.get('result', []):
 
 **Step 1: 逐个上传文件**
 
-多个文件需要**一个一个上传**，每次调用 `/files/add`（`isSingle=false`），`dbUrl` 会自动累积：
+多个文件需要**一个一个上传**，每次调用 `/files/add`（`isSingle=true`，与单文件相同），`dbUrl` 会自动累积：
+
+> **推荐用 `session.upload()`**（比手写 multipart 更简洁，且自动带 token header）：
+> ```python
+> import mimetypes
+> fname = os.path.basename(fpath)
+> ctype = mimetypes.guess_type(fname)[0] or 'application/octet-stream'
+> with open(fpath, 'rb') as f:
+>     content = f.read()
+> result = session.upload(
+>     "/source/datasource/files/add",
+>     files={"file": (fname, content, ctype)},
+>     params={"reportId": report_id, "isSingle": "true"}
+> )
+> ```
 
 ```python
 # 上传第1个文件
@@ -382,6 +429,26 @@ db_cfg = session.get(f"/loadDbData/{db_id}")["result"]["reportDb"]
 db_cfg["dbDynSql"] = new_sql
 session.request("/saveDb", db_cfg)  # fieldList 依然空
 ```
+
+### 4.1.5 CSV 文件编码不能用 utf-8-sig（BOM）
+
+**现象：** `queryFieldBySql` 报错 `Column 'id' not found in table 'a'`，SQL 语法本身正确。
+
+**根因：** Python `open(path, encoding='utf-8-sig')` 写出的 CSV 首行带 BOM（`﻿`）。Calcite 读取时把 BOM 附加在第一列名前，实际列名变成 `﻿id` 而非 `id`，SQL 中 `a.id` 找不到。
+
+**解决方案：** 程序生成供 Calcite 读取的 CSV，**始终用 `encoding='utf-8'`（无 BOM）**：
+
+```python
+# ✅ 正确
+with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+    csv.writer(f).writerows(data)
+
+# ❌ 错误：utf-8-sig 带 BOM，第一列名变成 '﻿id'
+with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
+    csv.writer(f).writerows(data)
+```
+
+> `utf-8-sig` 只适用于给 Excel 直接打开的 CSV，不适用于 Calcite/JimuReport 文件数据集。
 
 ---
 

@@ -174,6 +174,7 @@ JAreaMap 初始化
 | **HTTPS 证书错误** | DataV Aliyun HTTPS 证书问题 | Python 中用 `ssl.CERT_NONE` 跳过 |
 | **china 地图不走后端** | 代码逻辑 code='china' 加载前端内置 JSON | 全国地图不需要上传 |
 | **addMapData 的 name 格式** | name 存储 adcode（数字字符串）不是中文 | 用 `"650000"` 不是 `"新疆"` |
+| **台湾 710000 在 DataV 返回 404**（实测 2026-05-13） | `geo.datav.aliyun.com/areas_v3/bound/710000_full.json` 不存在，整省批量钻取上传时唯一会失败的省 | 批量上传循环里捕获 HTTPError 单独跳过；或从 echarts 地图源 / geojson.cn 等替代源拉取后用同样 `/jmreport/map/addMapData` 接口上传 |
 
 ## 核心源码位置
 

@@ -239,6 +239,237 @@ def import_report_config(base_url, token, file_path):
         print(f"导入失败: {r.get('message')} | code={r.get('code')}")
 
 
+# ── 定时导出任务 ────────────────────────────────────────────────────
+
+def schedule_export_job(base_url, token, name, export_reports,
+                        begin_time=None, end_time=None,
+                        exec_interval="0 0 8 * * ?",
+                        email_send=False, receiver_email="",
+                        is_sync_file=False, file_sync_path="",
+                        job_id=""):
+    """
+    创建或更新积木报表定时导出任务。
+
+    export_reports 格式（列表）：
+      [{"reportId": "xxx", "exportType": "PDF", "params": {}, "name": "报表名", "sheetId": "default", "tableIndex": 1}, ...]
+      exportType 可选值: PDF / EXCEL / WORD
+
+    返回任务 ID 字符串（成功）或 None（失败）。
+    注意：API 成功时 result 字段为 null，不返回新任务 ID。
+    若需要任务 ID，创建后调 list_export_jobs() 按名称查询。
+    """
+    import time as _time
+    from jimureport_core import _compute_sign
+
+    if begin_time is None:
+        import datetime
+        begin_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if end_time is None:
+        import datetime
+        end_time = (datetime.datetime.now() + datetime.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+
+    for i, r in enumerate(export_reports, 1):
+        r.setdefault("sheetId", "default")
+        r.setdefault("params", {})
+        r.setdefault("tableIndex", i)
+
+    report_conf = json.dumps(export_reports, ensure_ascii=False)
+
+    payload = {
+        "id": job_id,
+        "name": name,
+        "beginTime": begin_time,
+        "execInterval": exec_interval,
+        "endTime": end_time,
+        "exportReports": export_reports,
+        "emailSend": email_send,
+        "receiverEmail": receiver_email,
+        "isSyncFile": is_sync_file,
+        "fileSyncPath": file_sync_path,
+        "reportConf": report_conf,
+    }
+
+    headers = {
+        "X-Access-Token":     token,
+        "token":              token,
+        "Content-Type":       "application/json;charset=UTF-8",
+        "X-TIMESTAMP":        str(int(_time.time() * 1000)),
+        "X-Sign":             _compute_sign(payload),
+    }
+    sess = requests.Session(); sess.trust_env = False
+    base = base_url.rstrip("/")
+    if not base.endswith("/jmreport"):
+        base = base + "/jmreport"
+    r = sess.post(base + "/auto/export/job/save", json=payload, headers=headers, proxies={})
+    r.raise_for_status()
+    body = r.json()
+    if body.get("success"):
+        result_id = body.get("result") or job_id
+        print(f"定时导出任务「{name}」{'更新' if job_id else '创建'}成功")
+        print(f"  任务ID: {result_id}")
+        print(f"  执行周期: {exec_interval}")
+        print(f"  有效期: {begin_time} ~ {end_time}")
+        if email_send:
+            print(f"  邮件通知: {receiver_email}")
+        return result_id
+    else:
+        print(f"任务保存失败: {body.get('message')} | code={body.get('code')}")
+        return None
+
+
+# ── 定时导出任务立即执行 ────────────────────────────────────────────
+
+def run_export_job_now(base_url, token, job_id):
+    """
+    立即触发一次定时导出任务执行。
+
+    接口：GET /jmreport/auto/export/job/run/{jobId}
+    成功时 result 返回执行批次号（如 "20260507200649ShJ26W"）。
+    """
+    import time as _time
+    from jimureport_core import _compute_sign
+
+    params = {"token": token}
+    headers = {
+        "X-Access-Token":     token,
+        "token":              token,
+        "X-TIMESTAMP":        str(int(_time.time() * 1000)),
+        "X-Sign":             _compute_sign(params),
+    }
+    sess = requests.Session(); sess.trust_env = False
+    base = base_url.rstrip("/")
+    if not base.endswith("/jmreport"):
+        base = base + "/jmreport"
+    payload = {}
+    r = sess.post(f"{base}/auto/export/job/run/{job_id}", json=payload, headers=headers, proxies={})
+    r.raise_for_status()
+    body = r.json()
+    if body.get("success"):
+        batch = body.get("result", "")
+        print(f"任务 {job_id} 立即执行成功")
+        if batch:
+            print(f"  执行批次号: {batch}")
+    else:
+        print(f"立即执行失败: {body.get('message')} | code={body.get('code')}")
+    return body.get("success", False)
+
+
+# ── 定时导出任务列表 ─────────────────────────────────────────────────
+
+def list_export_jobs(base_url, token, name=None, page_size=50):
+    """
+    查询定时导出任务列表。
+
+    接口：GET /jmreport/auto/export/job/query（注意不是 /list，/list 返回 404）
+    返回 records 列表，每项含 id/name/status/execInterval/beginTime/endTime/createTime。
+    """
+    import time as _time
+    from jimureport_core import _compute_sign
+
+    params = {"pageNo": 1, "pageSize": page_size, "token": token}
+    headers = {
+        "X-Access-Token":     token,
+        "token":              token,
+        "X-TIMESTAMP":        str(int(_time.time() * 1000)),
+        "X-Sign":             _compute_sign(params),
+    }
+    sess = requests.Session(); sess.trust_env = False
+    base = base_url.rstrip("/")
+    if not base.endswith("/jmreport"):
+        base = base + "/jmreport"
+    r = sess.get(base + "/auto/export/job/query", params=params, headers=headers, proxies={})
+    r.raise_for_status()
+    records = r.json().get("result", {}).get("records", [])
+    if name:
+        records = [j for j in records if name in j.get("name", "")]
+    for j in records:
+        status_label = "运行中" if j.get("status") == 1 else "已停止"
+        print(f"  [{status_label}] ID={j['id']}  {j['name']}  {j.get('execInterval','')}  创建={j.get('createTime','')}")
+    return records
+
+
+# ── 定时导出任务删除 ─────────────────────────────────────────────────
+
+def delete_export_job(base_url, token, job_id):
+    """
+    删除定时导出任务。先停止（status=0）再删除，否则运行中的任务删除会返回 code:500。
+
+    接口：DELETE /jmreport/auto/export/job/delete?id={jobId}
+    """
+    import time as _time
+    from jimureport_core import _compute_sign
+
+    sess = requests.Session(); sess.trust_env = False
+    base = base_url.rstrip("/")
+    if not base.endswith("/jmreport"):
+        base = base + "/jmreport"
+
+    # 先停止任务
+    stop_payload = {"id": job_id, "status": 0}
+    stop_headers = {
+        "X-Access-Token":     token,
+        "token":              token,
+        "Content-Type":       "application/json;charset=UTF-8",
+        "X-TIMESTAMP":        str(int(_time.time() * 1000)),
+        "X-Sign":             _compute_sign(stop_payload),
+    }
+    sess.post(base + "/auto/export/job/status/update", json=stop_payload,
+              headers=stop_headers, proxies={})
+
+    # 再删除
+    payload = {}
+    headers = {
+        "X-Access-Token":     token,
+        "token":              token,
+        "Content-Type":       "application/json;charset=UTF-8",
+        "X-TIMESTAMP":        str(int(_time.time() * 1000)),
+        "X-Sign":             _compute_sign(payload),
+    }
+    r = sess.delete(f"{base}/auto/export/job/delete", params={"id": job_id},
+                    headers=headers, proxies={})
+    r.raise_for_status()
+    body = r.json()
+    if body.get("success") and body.get("code") == 200:
+        print(f"任务 {job_id} 删除成功")
+    else:
+        print(f"删除失败: {body.get('message')} | code={body.get('code')}")
+    return body.get("success", False) and body.get("code") == 200
+
+
+# ── 定时导出任务状态（启动/停止）────────────────────────────────────
+
+def update_export_job_status(base_url, token, job_id, status):
+    """
+    启动或停止定时导出任务。
+
+    status: 1 = 启动，0 = 停止
+    """
+    import time as _time
+    from jimureport_core import _compute_sign
+
+    payload = {"id": job_id, "status": status}
+    headers = {
+        "X-Access-Token":     token,
+        "token":              token,
+        "Content-Type":       "application/json;charset=UTF-8",
+        "X-TIMESTAMP":        str(int(_time.time() * 1000)),
+        "X-Sign":             _compute_sign(payload),
+    }
+    sess = requests.Session(); sess.trust_env = False
+    base = base_url.rstrip("/")
+    if not base.endswith("/jmreport"):
+        base = base + "/jmreport"
+    r = sess.post(base + "/auto/export/job/status/update", json=payload, headers=headers, proxies={})
+    r.raise_for_status()
+    body = r.json()
+    action = "启动" if status == 1 else "停止"
+    if body.get("success"):
+        print(f"任务 {job_id} {action}成功")
+    else:
+        print(f"任务 {action}失败: {body.get('message')} | code={body.get('code')}")
+    return body.get("success", False)
+
+
 # ── 导入 Excel ──────────────────────────────────────────────────────
 
 def import_excel(base_url, token, xlsx_path, name=None):
@@ -304,6 +535,32 @@ def main():
     ic = sub.add_parser("import-config", help="导入报表配置（迁移包 .json）")
     ic.add_argument("file_path")
 
+    jl = sub.add_parser("job-list", help="查询定时导出任务列表")
+    jl.add_argument("--name", default=None, help="按名称过滤（模糊匹配）")
+
+    jd = sub.add_parser("job-delete", help="删除定时导出任务")
+    jd.add_argument("job_id", help="任务 ID")
+
+    jr = sub.add_parser("job-run", help="立即执行定时导出任务（一次性触发）")
+    jr.add_argument("job_id", help="任务 ID")
+
+    js = sub.add_parser("job-start", help="启动定时导出任务")
+    js.add_argument("job_id", help="任务 ID")
+
+    jx = sub.add_parser("job-stop", help="停止定时导出任务")
+    jx.add_argument("job_id", help="任务 ID")
+
+    se = sub.add_parser("schedule-export", help="创建/更新定时导出任务")
+    se.add_argument("--name", required=True, help="任务名称")
+    se.add_argument("--reports", required=True,
+                    help='报表列表 JSON，例如: \'[{"reportId":"xxx","exportType":"PDF","name":"报表名"}]\'')
+    se.add_argument("--cron", default="0 0 8 * * ?", help="Cron 表达式，默认每天 8 点")
+    se.add_argument("--begin", default=None, help="开始时间，格式 YYYY-MM-DD HH:mm:ss，默认当前时间")
+    se.add_argument("--end", default=None, help="结束时间，格式 YYYY-MM-DD HH:mm:ss，默认 30 天后")
+    se.add_argument("--email", default="", help="收件人邮箱，留空则不发邮件")
+    se.add_argument("--sync-path", default="", help="文件同步路径，留空则不同步")
+    se.add_argument("--job-id", default="", help="任务 ID，更新已有任务时传入")
+
     args = p.parse_args()
     if args.cmd == "share":
         share_report(args.base_url, args.token, args.name, args.validity, args.lock, args.password, index=args.index)
@@ -318,6 +575,35 @@ def main():
         import_excel(args.base_url, args.token, args.xlsx_path, args.name)
     elif args.cmd == "import-config":
         import_report_config(args.base_url, args.token, args.file_path)
+    elif args.cmd == "job-list":
+        list_export_jobs(args.base_url, args.token, name=args.name)
+    elif args.cmd == "job-delete":
+        delete_export_job(args.base_url, args.token, args.job_id)
+    elif args.cmd == "job-run":
+        run_export_job_now(args.base_url, args.token, args.job_id)
+    elif args.cmd == "job-start":
+        update_export_job_status(args.base_url, args.token, args.job_id, 1)
+    elif args.cmd == "job-stop":
+        update_export_job_status(args.base_url, args.token, args.job_id, 0)
+    elif args.cmd == "schedule-export":
+        try:
+            reports = json.loads(args.reports)
+        except json.JSONDecodeError as e:
+            print(f"--reports 参数 JSON 解析失败: {e}")
+            sys.exit(1)
+        schedule_export_job(
+            args.base_url, args.token,
+            name=args.name,
+            export_reports=reports,
+            begin_time=args.begin,
+            end_time=args.end,
+            exec_interval=args.cron,
+            email_send=bool(args.email),
+            receiver_email=args.email,
+            is_sync_file=bool(args.sync_path),
+            file_sync_path=args.sync_path,
+            job_id=args.job_id,
+        )
     else:
         p.print_help()
 

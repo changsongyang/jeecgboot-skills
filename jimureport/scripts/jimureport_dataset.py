@@ -63,6 +63,19 @@ def save_db(
     db_type: "0"=SQL / "1"=API / "2"=JavaBean / "3"=JSON / "4"=共享
     JavaBean 专用：java_type="spring-key", java_value=Bean名称
     """
+    # JSON 数据集自动包裹：引擎从 data 键取行，裸 list/dict 会导致预览全空
+    if db_type == "3" and json_data:
+        try:
+            import json as _json
+            _parsed = _json.loads(json_data) if isinstance(json_data, str) else json_data
+            if isinstance(_parsed, list):
+                json_data = _json.dumps({"data": _parsed}, ensure_ascii=False)
+            elif isinstance(_parsed, dict) and "data" not in _parsed:
+                json_data = _json.dumps({"data": [_parsed]}, ensure_ascii=False)
+            elif not isinstance(json_data, str):
+                json_data = _json.dumps(_parsed, ensure_ascii=False)
+        except (ValueError, TypeError):
+            pass
 
     payload: dict = {
         "izSharedSource": is_shared,
@@ -122,6 +135,21 @@ def update_db(session: Session, db_id: str, **fields) -> None:
                 p = {**p, "id": existing_id_by_name[p["paramName"]]}
             merged.append(p)
         fields = {**fields, "paramList": merged}
+
+    # JSON 数据集自动包裹（同 save_db 逻辑）
+    if "jsonData" in fields and db.get("dbType") == "3":
+        try:
+            import json as _json
+            _jd = fields["jsonData"]
+            _parsed = _json.loads(_jd) if isinstance(_jd, str) else _jd
+            if isinstance(_parsed, list):
+                fields = {**fields, "jsonData": _json.dumps({"data": _parsed}, ensure_ascii=False)}
+            elif isinstance(_parsed, dict) and "data" not in _parsed:
+                fields = {**fields, "jsonData": _json.dumps({"data": [_parsed]}, ensure_ascii=False)}
+            elif not isinstance(_jd, str):
+                fields = {**fields, "jsonData": _json.dumps(_parsed, ensure_ascii=False)}
+        except (ValueError, TypeError):
+            pass
 
     db.update(fields)
     session.request("/saveDb", db)

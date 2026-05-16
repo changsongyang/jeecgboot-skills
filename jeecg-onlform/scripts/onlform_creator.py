@@ -651,8 +651,29 @@ def _addall_table(api_base, token, table_config):
 
     result = api_request(api_base, token, '/online/cgform/api/addAll', form_data)
     ok = result.get('success', False)
-    print(f'创建结果: success={ok}, message={result.get("message")}')
-    return table_name, ok
+    msg = result.get('message', '')
+    print(f'创建结果: success={ok}, message={msg}')
+    return table_name, ok, msg
+
+
+def _create_with_auto_suffix(api_base, token, table_config, sub_configs=None):
+    """创建表，名称冲突时自动加 _1/_2/_3 后缀重试，并同步更新关联子表的 mainTable 引用。"""
+    original_name = table_config['tableName']
+    for attempt in range(4):  # 尝试原名, _1, _2, _3
+        cfg = table_config if attempt == 0 else {**table_config, 'tableName': f'{original_name}_{attempt}'}
+        if attempt > 0:
+            print(f'  [自动] 表名冲突，改为: {cfg["tableName"]}')
+        name, ok, msg = _addall_table(api_base, token, cfg)
+        if ok:
+            if attempt > 0 and sub_configs:
+                for sc in sub_configs:
+                    if sc.get('mainTable') == original_name:
+                        sc['mainTable'] = name
+                        print(f'  [自动] 更新子表 {sc["tableName"]} 的 mainTable: {original_name} → {name}')
+            return name, True, cfg
+        if '已存在' not in (msg or ''):
+            return name, False, cfg  # 非冲突错误，不重试
+    return original_name, False, table_config
 
 
 def _get_head_id_task(args):
@@ -717,8 +738,9 @@ def main():
         created_names = []
 
         # Step 1: 顺序创建主表/单表（子表依赖主表已写入 onl_cgform_head）
+        # 名称冲突时自动加 _1/_2 后缀，并同步更新子表 mainTable 引用
         for t in non_sub:
-            name, ok = _addall_table(args.api_base, args.token, t)
+            name, ok, _ = _create_with_auto_suffix(args.api_base, args.token, t, sub_only)
             if ok:
                 created_names.append(name)
 
@@ -729,7 +751,7 @@ def main():
                 futures = [pool.submit(_addall_table, args.api_base, args.token, t)
                            for t in sub_only]
                 for fut in as_completed(futures):
-                    name, ok = fut.result()
+                    name, ok, msg = fut.result()
                     if ok:
                         created_names.append(name)
 
@@ -769,9 +791,29 @@ def main():
             print_menu_sql(main_head_id, tables[0]['tableTxt'])
 
     elif action == 'edit':
-        head_id = edit_table(args.api_base, args.token, config)
-        if head_id:
-            print(f'\n编辑完成! headId={head_id}')
+        # 支持单表（顶层字段）和多表并行（tables: []）
+        edits = config.get('tables')
+        if edits:
+            print(f'\n[并行] 编辑 {len(edits)} 个表...')
+            ok_count = 0
+            with ThreadPoolExecutor(max_workers=min(8, len(edits))) as pool:
+                futures = {
+                    pool.submit(edit_table, args.api_base, args.token, e):
+                        e.get('tableName') or e.get('headId') or '?'
+                    for e in edits
+                }
+                for fut in as_completed(futures):
+                    tname = futures[fut]
+                    try:
+                        if fut.result():
+                            ok_count += 1
+                    except Exception as ex:
+                        print(f'  [失败] {tname}: {ex}')
+            print(f'\n批量编辑完成: {ok_count}/{len(edits)} 个表成功')
+        else:
+            head_id = edit_table(args.api_base, args.token, config)
+            if head_id:
+                print(f'\n编辑完成! headId={head_id}')
 
     elif action == 'reorder':
         reorder_fields(args.api_base, args.token, config)

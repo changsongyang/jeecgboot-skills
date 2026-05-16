@@ -2580,6 +2580,484 @@ def config_start_node_form(api_base, token, process_id, start_form, node_code=No
         return False
 
 
+def validate_and_fix_layout(xml, config):
+    """检查 BPMN XML 的节点布局，若发现节点重叠则自动修复。
+
+    检测规则：任意两个主流程节点的矩形区域存在面积重叠（x 和 y 轴同时重叠）视为布局问题。
+    修复策略：重新调用布局算法重建整个 BPMNDiagram 区块，BPMN Process 部分保持不变。
+
+    本函数在保存前自动调用，无需手动触发。
+
+    Args:
+        xml:    完整的 BPMN XML 字符串
+        config: 已 expand_config 展开的 JSON 配置（含 nodes/flows/_manualBranch 等）
+
+    Returns:
+        (fixed_xml, was_fixed, issues_desc)
+        - fixed_xml:   修复后的 XML（若无问题则与入参相同）
+        - was_fixed:   是否进行了修复
+        - issues_desc: 问题描述字符串（was_fixed=False 时为空串）
+    """
+    import re as _re
+
+    # ── 1. 解析 BPMNDiagram 中所有 Shape 的 bounds ──────────────────────────
+    shapes = {}
+    for m in _re.finditer(
+        r'<bpmndi:BPMNShape\s[^>]*bpmnElement="([^"]+)"[^>]*>.*?</bpmndi:BPMNShape>',
+        xml, _re.DOTALL
+    ):
+        eid = m.group(1)
+        bm = _re.search(
+            r'<dc:Bounds\s+x="([\d.]+)"\s+y="([\d.]+)"\s+width="([\d.]+)"\s+height="([\d.]+)"',
+            m.group(0)
+        )
+        if bm:
+            shapes[eid] = {
+                'x': float(bm.group(1)), 'y': float(bm.group(2)),
+                'w': float(bm.group(3)), 'h': float(bm.group(4)),
+            }
+
+    # 边界事件（attachedToRef 存在）不参与重叠检测——它们附着于父节点，位置由设计决定
+    boundary_ids = set()
+    for m in _re.finditer(r'<bpmndi:BPMNShape\s[^>]*bpmnElement="([^"]+)"[^>]*isInterrupting="[^"]*"', xml):
+        boundary_ids.add(m.group(1))
+    # 额外：通过命名约定识别边界事件（timer_ / signal_boundary_ / msg_boundary_）
+    for eid in list(shapes.keys()):
+        if _re.match(r'(timer|signal_boundary|msg_boundary)_', eid):
+            boundary_ids.add(eid)
+
+    check_shapes = {k: v for k, v in shapes.items() if k not in boundary_ids}
+
+    # ── 2. 检测布局问题（4 项检查） ───────────────────────────────────────────
+    issues = []
+    items = list(check_shapes.items())
+    MIN_GAP = 5  # 节点间最小间距（px），低于此值视为"几乎重叠"
+
+    # 检查 2a：节点矩形面积重叠（x 和 y 轴同时重叠）
+    for i in range(len(items)):
+        id1, b1 = items[i]
+        for j in range(i + 1, len(items)):
+            id2, b2 = items[j]
+            x_overlap = b1['x'] < b2['x'] + b2['w'] and b2['x'] < b1['x'] + b1['w']
+            y_overlap = b1['y'] < b2['y'] + b2['h'] and b2['y'] < b1['y'] + b1['h']
+            if x_overlap and y_overlap:
+                issues.append(
+                    f'[节点重叠] {id1}(x={b1["x"]},y={b1["y"]},w={b1["w"]},h={b1["h"]}) '
+                    f'与 {id2}(x={b2["x"]},y={b2["y"]},w={b2["w"]},h={b2["h"]})'
+                )
+
+    # 检查 2b：节点间距过小（水平方向或垂直方向间隙 < MIN_GAP，但未到重叠）
+    for i in range(len(items)):
+        id1, b1 = items[i]
+        for j in range(i + 1, len(items)):
+            id2, b2 = items[j]
+            # 只检查同侧方向上对齐的节点对（同列 or 同行）
+            same_col = abs((b1['x'] + b1['w'] / 2) - (b2['x'] + b2['w'] / 2)) < 10
+            same_row = abs((b1['y'] + b1['h'] / 2) - (b2['y'] + b2['h'] / 2)) < 10
+            if same_col:
+                top, bot = (b1, b2) if b1['y'] < b2['y'] else (b2, b1)
+                gap = bot['y'] - (top['y'] + top['h'])
+                if 0 < gap < MIN_GAP:
+                    issues.append(
+                        f'[间距不足] {id1} 与 {id2} 纵向间距仅 {gap:.1f}px（最小 {MIN_GAP}px）'
+                    )
+            elif same_row:
+                left, right = (b1, b2) if b1['x'] < b2['x'] else (b2, b1)
+                gap = right['x'] - (left['x'] + left['w'])
+                if 0 < gap < MIN_GAP:
+                    issues.append(
+                        f'[间距不足] {id1} 与 {id2} 横向间距仅 {gap:.1f}px（最小 {MIN_GAP}px）'
+                    )
+
+    # 检查 2c：连线线段穿越节点矩形
+    # 先从 sequenceFlow 解析 source/target（用于排除合法端点）
+    flow_endpoints = {}
+    for fm in _re.finditer(
+        r'<bpmn2:sequenceFlow[^>]+id="([^"]+)"[^>]+sourceRef="([^"]+)"[^>]+targetRef="([^"]+)"',
+        xml
+    ):
+        flow_endpoints[fm.group(1)] = (fm.group(2), fm.group(3))
+    # 同时也支持属性顺序颠倒的写法
+    for fm in _re.finditer(
+        r'<bpmn2:sequenceFlow[^>]+id="([^"]+)"[^>]+targetRef="([^"]+)"[^>]+sourceRef="([^"]+)"',
+        xml
+    ):
+        if fm.group(1) not in flow_endpoints:
+            flow_endpoints[fm.group(1)] = (fm.group(3), fm.group(2))
+
+    # 解析所有 BPMNEdge 的 waypoints
+    edge_waypoints = {}
+    for em in _re.finditer(
+        r'<bpmndi:BPMNEdge\s[^>]*bpmnElement="([^"]+)"[^>]*>(.*?)</bpmndi:BPMNEdge>',
+        xml, _re.DOTALL
+    ):
+        fid = em.group(1)
+        wps = _re.findall(r'<di:waypoint\s+x="([\d.]+)"\s+y="([\d.]+)"', em.group(2))
+        if wps:
+            edge_waypoints[fid] = [(float(x), float(y)) for x, y in wps]
+
+    def _segment_crosses_rect(ax, ay, bx, by, rx, ry, rw, rh):
+        """检查线段 AB 是否穿越矩形（含边界擦过）。
+        先检查端点是否在矩形内/上，再用参数化方程检查线段与矩形四条边的交点。
+        注意：使用 <= 而非 < 以捕获线段从矩形边界穿入的情况。"""
+        def inside(px, py):
+            return rx <= px <= rx + rw and ry <= py <= ry + rh
+        if inside(ax, ay) or inside(bx, by):
+            return True
+        dx, dy = bx - ax, by - ay
+        for t_num, t_den in [
+            (rx - ax, dx),       # 左边
+            (rx + rw - ax, dx),  # 右边
+            (ry - ay, dy),       # 上边
+            (ry + rh - ay, dy),  # 下边
+        ]:
+            if abs(t_den) < 1e-9:
+                continue
+            t = t_num / t_den
+            if 0 < t < 1:
+                ix, iy = ax + t * dx, ay + t * dy
+                if rx <= ix <= rx + rw and ry <= iy <= ry + rh:
+                    return True
+        return False
+
+    for fid, pts in edge_waypoints.items():
+        src_id, tgt_id = flow_endpoints.get(fid, (None, None))
+        # 端点所在的节点不检测（连线必然"接触"它们）
+        skip_nodes = {src_id, tgt_id} - {None}
+        crossed = False
+        for i in range(len(pts) - 1):
+            ax, ay = pts[i]
+            bx, by = pts[i + 1]
+            for nid, b in check_shapes.items():
+                if nid in skip_nodes:
+                    continue
+                if _segment_crosses_rect(ax, ay, bx, by, b['x'], b['y'], b['w'], b['h']):
+                    issues.append(f'[连线穿节点] 连线 {fid} 第{i+1}段穿越节点 {nid}')
+                    crossed = True
+                    break
+            if crossed:
+                break  # 每条边只报一次
+
+    # 检查 2d：BPMNLabel 是否落在其他节点矩形内（仅检查节点自身标签位置）
+    label_issues = []
+    for lm in _re.finditer(
+        r'<bpmndi:BPMNShape[^>]*bpmnElement="([^"]+)"[^>]*>.*?'
+        r'<bpmndi:BPMNLabel>.*?<dc:Bounds\s+x="([\d.]+)"\s+y="([\d.]+)"[^/]*/?>',
+        xml, _re.DOTALL
+    ):
+        label_owner = lm.group(1)
+        if label_owner in boundary_ids:
+            continue
+        lx, ly = float(lm.group(2)), float(lm.group(3))
+        for nid, b in check_shapes.items():
+            if nid == label_owner:
+                continue
+            if b['x'] <= lx <= b['x'] + b['w'] and b['y'] <= ly <= b['y'] + b['h']:
+                label_issues.append(f'[标签遮挡] {label_owner} 的标签落在节点 {nid} 内部')
+                break
+    issues.extend(label_issues)
+
+    # ── 检查 2e：连线标签相互堆叠（两个 flow label 矩形重叠）───────────────────
+    edge_label_bounds = {}
+    for _elm in _re.finditer(
+        r'<bpmndi:BPMNEdge[^>]*bpmnElement="([^"]+)"[^>]*>.*?'
+        r'<bpmndi:BPMNLabel>.*?'
+        r'<dc:Bounds\s+x="([\d.]+)"\s+y="([\d.]+)"\s+width="([\d.]+)"\s+height="([\d.]+)"',
+        xml, _re.DOTALL
+    ):
+        edge_label_bounds[_elm.group(1)] = (
+            float(_elm.group(2)), float(_elm.group(3)),
+            float(_elm.group(4)), float(_elm.group(5))
+        )
+
+    _lbl_items = list(edge_label_bounds.items())
+    for _i in range(len(_lbl_items)):
+        _fl1, (_lx1, _ly1, _lw1, _lh1) = _lbl_items[_i]
+        for _j in range(_i + 1, len(_lbl_items)):
+            _fl2, (_lx2, _ly2, _lw2, _lh2) = _lbl_items[_j]
+            if (_lx1 < _lx2 + _lw2 and _lx2 < _lx1 + _lw1
+                    and _ly1 < _ly2 + _lh2 and _ly2 < _ly1 + _lh1):
+                issues.append(f'[标签堆叠] 连线 {_fl1} 与 {_fl2} 的标签矩形重叠')
+
+    # ── 检查 2f：连线标签落入节点矩形（标签遮挡节点）───────────────────────────
+    for _fl, (_lx, _ly, _lw, _lh) in edge_label_bounds.items():
+        _src, _tgt = flow_endpoints.get(_fl, (None, None))
+        _skip_lbl = {_src, _tgt} - {None}
+        for _nid, _b in check_shapes.items():
+            if _nid in _skip_lbl:
+                continue
+            if (_lx < _b['x'] + _b['w'] and _b['x'] < _lx + _lw
+                    and _ly < _b['y'] + _b['h'] and _b['y'] < _ly + _lh):
+                issues.append(f'[标签遮挡节点] 连线 {_fl} 的标签与节点 {_nid} 矩形重叠')
+                break
+
+    # ── 检查 2g：连线标签与其他连线线段相交（标签压线）─────────────────────────
+    for _fl_l, (_lx, _ly, _lw, _lh) in edge_label_bounds.items():
+        for _fl_e, _pts in edge_waypoints.items():
+            if _fl_e == _fl_l:
+                continue
+            _hit = False
+            for _si in range(len(_pts) - 1):
+                if _segment_crosses_rect(
+                    _pts[_si][0], _pts[_si][1], _pts[_si+1][0], _pts[_si+1][1],
+                    _lx, _ly, _lw, _lh
+                ):
+                    issues.append(f'[标签压线] 连线 {_fl_l} 的标签被连线 {_fl_e} 穿越')
+                    _hit = True
+                    break
+            if _hit:
+                break
+
+    # ── 检查 3a：流程结构 — startEvent / endEvent 数量 ──────────────────────────
+    struct_issues = []
+    _start_ids = _re.findall(r'<bpmn2:startEvent\s+id="([^"]+)"', xml)
+    _end_ids   = _re.findall(r'<bpmn2:endEvent\s+id="([^"]+)"', xml)
+    if len(_start_ids) != 1:
+        struct_issues.append(
+            f'[结构错误] 流程含 {len(_start_ids)} 个 startEvent（应有且仅有 1 个）: {_start_ids}')
+    if len(_end_ids) != 1:
+        struct_issues.append(
+            f'[结构错误] 流程含 {len(_end_ids)} 个 endEvent（应有且仅有 1 个）: {_end_ids}')
+
+    # ── 检查 3b：连线整体合理性 ──────────────────────────────────────────────────
+    # 3b-1: 连线源/目标节点必须存在于 BPMNDiagram 中
+    _all_diagram_ids = set(shapes.keys())
+    for _fl, (_src, _tgt) in flow_endpoints.items():
+        if _src and _src not in _all_diagram_ids:
+            struct_issues.append(f'[连线悬空] 连线 {_fl} 的源节点 {_src} 不在 BPMNDiagram 中')
+        if _tgt and _tgt not in _all_diagram_ids:
+            struct_issues.append(f'[连线悬空] 连线 {_fl} 的目标节点 {_tgt} 不在 BPMNDiagram 中')
+    # 3b-2: 中间节点必须同时有入边和出边
+    _out_map, _in_map = {}, {}
+    for _fl, (_src, _tgt) in flow_endpoints.items():
+        _out_map.setdefault(_src, []).append(_fl)
+        _in_map.setdefault(_tgt, []).append(_fl)
+    _start_end_set = set(_start_ids + _end_ids)
+    for _nid in check_shapes:
+        if _nid in _start_end_set or _nid in boundary_ids:
+            continue
+        if _nid not in _out_map and _nid not in _in_map:
+            struct_issues.append(f'[孤立节点] 节点 {_nid} 无任何入边或出边')
+        elif _nid not in _out_map:
+            struct_issues.append(f'[节点悬空] 节点 {_nid} 无出边（流程死路）')
+        elif _nid not in _in_map:
+            struct_issues.append(f'[节点悬空] 节点 {_nid} 无入边（不可达节点）')
+
+    # ── 检查 4a：连线线段共线重叠（两条边存在重叠路径）────────────────────────
+    def _segs_colinear_overlap(ax, ay, bx, by, cx, cy, dx, dy, tol=2.0, min_px=6):
+        _ab_h = abs(ay - by) < tol;  _ab_v = abs(ax - bx) < tol
+        _cd_h = abs(cy - dy) < tol;  _cd_v = abs(cx - dx) < tol
+        if _ab_h and _cd_h and abs(ay - cy) < tol:
+            return min(max(ax, bx), max(cx, dx)) - max(min(ax, bx), min(cx, dx)) > min_px
+        if _ab_v and _cd_v and abs(ax - cx) < tol:
+            return min(max(ay, by), max(cy, dy)) - max(min(ay, by), min(cy, dy)) > min_px
+        return False
+
+    _edge_list = list(edge_waypoints.items())
+    for _i in range(len(_edge_list)):
+        _fid1, _pts1 = _edge_list[_i]
+        for _j in range(_i + 1, len(_edge_list)):
+            _fid2, _pts2 = _edge_list[_j]
+            _hit = False
+            for _si in range(len(_pts1) - 1):
+                if _hit:
+                    break
+                for _sj in range(len(_pts2) - 1):
+                    if _segs_colinear_overlap(
+                        _pts1[_si][0], _pts1[_si][1], _pts1[_si+1][0], _pts1[_si+1][1],
+                        _pts2[_sj][0], _pts2[_sj][1], _pts2[_sj+1][0], _pts2[_sj+1][1]
+                    ):
+                        issues.append(f'[连线重叠] 连线 {_fid1} 与 {_fid2} 存在共线重叠段')
+                        _hit = True
+                        break
+
+    issues.extend(struct_issues)
+
+    if not issues:
+        return xml, False, ''
+
+    # 结构性错误单独上报，不触发布局重建（无法通过移动节点修复）
+    if struct_issues:
+        print(f'  [结构校验] 发现 {len(struct_issues)} 处结构错误（不可自动修复）:')
+        for _iss in struct_issues:
+            print(f'    ✗ {_iss}')
+
+    layout_issues = [iss for iss in issues if iss not in set(struct_issues)]
+    if not layout_issues:
+        # 仅结构错误，无需重建布局
+        return xml, False, '；'.join(struct_issues)
+
+    issues_desc = '；'.join(issues[:5])
+    if len(issues) > 5:
+        issues_desc += f'…（共 {len(issues)} 处）'
+
+    print(f'  [布局检查] 发现 {len(layout_issues)} 处布局问题，正在自动修复...')
+    for iss in layout_issues[:5]:
+        print(f'    - {iss}')
+    if len(layout_issues) > 5:
+        print(f'    - ... 共 {len(layout_issues)} 处')
+
+    # ── 3. 重建 DI 区块（复用 build_bpmn_xml 内的布局逻辑） ─────────────────
+    nodes = config['nodes']
+    flows = config['flows']
+
+    # 与 build_bpmn_xml 保持一致：过滤掉不支持的节点
+    supported_types = {
+        'startEvent', 'endEvent', 'userTask', 'serviceTask', 'aiTask', 'apiTask',
+        'scriptTask', 'exclusiveGateway', 'parallelGateway', 'inclusiveGateway',
+        'callActivity', 'subProcess', 'signalThrow', 'signalCatch', 'messageThrow', 'messageCatch',
+    }
+    supported_nodes = [n for n in nodes if n.get('type') in supported_types]
+    _node_ids_ok = {n['id'] for n in supported_nodes}
+
+    def _fill_missing_fix(positions, s_nodes, f_list):
+        missing = [n for n in s_nodes if n['id'] not in positions]
+        if missing:
+            max_bottom = max((p['bottom'] for p in positions.values()), default=START_Y)
+            extra_pos = calc_layout(missing, f_list)
+            offset_y = max_bottom + VERTICAL_GAP - START_Y
+            for nid, pos in extra_pos.items():
+                positions[nid] = {
+                    'x': pos['x'], 'y': pos['y'] + offset_y,
+                    'w': pos['w'], 'h': pos['h'],
+                    'cx': pos['cx'], 'cy': pos['cy'] + offset_y,
+                    'bottom': pos['bottom'] + offset_y,
+                }
+
+    is_manual_branch = '_manualBranch' in config
+    is_horizontal_multirow = is_manual_branch and _detect_horizontal_multirow(config)
+    is_complex_vertical = (is_manual_branch and not is_horizontal_multirow
+                           and _detect_complex_vertical(config))
+
+    if is_horizontal_multirow:
+        positions = calc_layout_horizontal_multirow(config)
+        _fill_missing_fix(positions, supported_nodes, flows)
+    elif is_complex_vertical:
+        positions = calc_layout_complex_vertical(config)
+        _fill_missing_fix(positions, supported_nodes, flows)
+    elif is_manual_branch:
+        positions = calc_layout_manual_branch(config)
+        _fill_missing_fix(positions, supported_nodes, flows)
+    else:
+        positions = calc_layout(supported_nodes, flows)
+
+    # 生成 Shape XML（主节点）
+    shape_xmls = []
+    for node in supported_nodes:
+        if node['id'] in positions:
+            shape_xmls.append(gen_shape_xml(node, positions[node['id']]))
+
+    # 重建边界定时器 Shape（依赖父节点位置）
+    boundary_shape_xmls = []
+    boundary_edge_xmls = []
+    for node in nodes:
+        timer = node.get('timer')
+        if not timer or node['id'] not in positions:
+            continue
+        task_pos = positions[node['id']]
+        event_id = timer.get('eventId') or f'timer_{node["id"]}'
+        boundary_shape_xmls.append(gen_boundary_timer_shape(event_id, task_pos))
+        timer_target = timer.get('timerTarget')
+        if timer_target and timer_target in positions:
+            timer_flow_id = timer.get('timerFlowId') or f'flow_{event_id}'
+            tgt_pos = positions[timer_target]
+            boundary_edge_xmls.append(
+                f'      <bpmndi:BPMNEdge id="edge_{timer_flow_id}" bpmnElement="{timer_flow_id}">\n'
+                f'        <di:waypoint x="{task_pos["cx"]}" y="{task_pos["bottom"]}" />\n'
+                f'        <di:waypoint x="{tgt_pos["cx"]}" y="{tgt_pos["y"]}" />\n'
+                f'      </bpmndi:BPMNEdge>'
+            )
+
+    # 生成 Edge XML（主连线）
+    _node_map_fix = {n['id']: n for n in nodes}
+    edge_xmls = []
+    for flow in flows:
+        if flow['source'] not in _node_ids_ok or flow['target'] not in _node_ids_ok:
+            continue
+        if flow['source'] not in positions or flow['target'] not in positions:
+            continue
+        if is_horizontal_multirow:
+            edge_xmls.append(gen_edge_xml_horizontal_multirow(flow, positions, config))
+        elif is_complex_vertical:
+            edge_xmls.append(gen_edge_xml_complex_vertical(flow, positions, _node_map_fix))
+        elif is_manual_branch:
+            edge_xmls.append(gen_edge_xml_manual_branch(flow, positions, config))
+        else:
+            edge_xmls.append(gen_edge_xml(flow, positions))
+
+    all_shape_xmls = shape_xmls + boundary_shape_xmls
+    all_edge_xmls = edge_xmls + boundary_edge_xmls
+
+    process_key = config['processKey']
+    new_di = (
+        f'  <bpmndi:BPMNDiagram id="BPMNDiagram_1">\n'
+        f'    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="{process_key}">\n'
+        + '\n'.join(all_shape_xmls) + '\n'
+        + '\n'.join(all_edge_xmls) + '\n'
+        + '    </bpmndi:BPMNPlane>\n'
+        + '  </bpmndi:BPMNDiagram>'
+    )
+
+    di_start = xml.find('<bpmndi:BPMNDiagram')
+    di_end = xml.find('</bpmndi:BPMNDiagram>') + len('</bpmndi:BPMNDiagram>')
+    fixed_xml = xml[:di_start] + new_di + xml[di_end:]
+
+    # ── 4. 重建后：将 flow label 定位到路径中点，消除标签堆积 ─────────────────
+    def _reposition_flow_labels(rebuilt_xml):
+        """把每条有文字标签的连线的 BPMNLabel 移动到路径中点旁侧，避免堆叠。"""
+        def _fix_edge_label(em):
+            blk = em.group(0)
+            if '<bpmndi:BPMNLabel>' not in blk:
+                return blk
+            _wps = _re.findall(r'<di:waypoint\s+x="([\d.]+)"\s+y="([\d.]+)"', blk)
+            if len(_wps) < 2:
+                return blk
+            _pts = [(float(x), float(y)) for x, y in _wps]
+            # 计算各段长度及路径总长
+            _segs = [abs(_pts[k+1][0]-_pts[k][0]) + abs(_pts[k+1][1]-_pts[k][1])
+                     for k in range(len(_pts)-1)]
+            _total = sum(_segs)
+            if _total < 1:
+                return blk
+            # 定位路径中点
+            _half, _acc = _total / 2, 0
+            _mx, _my, _sdx, _sdy = _pts[0][0], _pts[0][1], 1, 0
+            for _k, _sl in enumerate(_segs):
+                if _acc + _sl >= _half:
+                    _t = (_half - _acc) / max(_sl, 0.001)
+                    _mx = _pts[_k][0] + _t * (_pts[_k+1][0] - _pts[_k][0])
+                    _my = _pts[_k][1] + _t * (_pts[_k+1][1] - _pts[_k][1])
+                    _sdx = _pts[_k+1][0] - _pts[_k][0]
+                    _sdy = _pts[_k+1][1] - _pts[_k][1]
+                    break
+                _acc += _sl
+            # 水平段 → 标签在线上方；垂直段 → 标签在线左侧
+            _LW, _LH = 55, 20
+            if abs(_sdy) < 1:        # 水平线段
+                _lx, _ly = _mx - _LW / 2, _my - _LH - 4
+            else:                     # 垂直线段
+                _lx, _ly = _mx - _LW - 6, _my - _LH / 2
+            _new_bounds = (f'<dc:Bounds x="{_lx:.0f}" y="{_ly:.0f}"'
+                           f' width="{_LW}" height="{_LH}" />')
+
+            def _upd_lbl(lm):
+                return _re.sub(r'<dc:Bounds[^/]*/>', _new_bounds, lm.group(0), count=1)
+
+            return _re.sub(
+                r'<bpmndi:BPMNLabel>.*?</bpmndi:BPMNLabel>',
+                _upd_lbl, blk, flags=_re.DOTALL
+            )
+
+        return _re.sub(
+            r'<bpmndi:BPMNEdge[^>]*>.*?</bpmndi:BPMNEdge>',
+            _fix_edge_label, rebuilt_xml, flags=_re.DOTALL
+        )
+
+    fixed_xml = _reposition_flow_labels(fixed_xml)
+    print(f'  [布局优化] 已自动修复重叠问题: {issues_desc}')
+    return fixed_xml, True, issues_desc
+
+
 def save_process(api_base, token, config, bpmn_xml):
     """调用 saveProcess API"""
     process_id = config.get('processId', '0')
@@ -3159,6 +3637,11 @@ def main():
         print(bpmn_xml)
         print(f'\nProcess Key: {config["processKey"]}')
         return
+
+    # 保存前检查并修复布局（规则：节点重叠则自动重建 BPMNDiagram）
+    bpmn_xml, _layout_fixed, _layout_issues = validate_and_fix_layout(bpmn_xml, config)
+    if _layout_fixed:
+        print(f'  [布局优化] 已自动修复重叠问题: {_layout_issues}')
 
     # 保存流程
     print(f'正在创建流程: {config["processName"]}')

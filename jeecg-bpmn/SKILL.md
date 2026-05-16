@@ -7,6 +7,35 @@ description: Use when user asks to create/generate/edit/modify a BPM workflow, d
 
 将自然语言的流程描述转换为 Flowable BPMN 2.0 XML，并通过 API 在 JeecgBoot 系统中自动创建流程。
 
+## 临时配置文件规则（强制）
+
+所有传给脚本的 `--config <xxx.json>` 必须写到 **`{系统临时目录}/{SKILL_NAME}/`** 下，由操作系统自动清理；skill 与脚本均不主动删除该目录或文件。
+
+```python
+import tempfile, os, json
+
+SKILL_NAME = "<SKILL_NAME>"               # 请替换为实际的技能名称
+skill_dir = os.path.join(tempfile.gettempdir(), SKILL_NAME)
+os.makedirs(skill_dir, exist_ok=True)          # 确保目录存在，不主动检查
+
+config_path = os.path.join(skill_dir, 'sk_audit_create.json')   # 示例文件名
+with open(config_path, 'w', encoding='utf-8') as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+```
+
+`tempfile.gettempdir()` 自动适配：Windows `%TEMP%`、Linux `/tmp`、macOS `/var/folders/.../T`（注意 macOS 并非 `/tmp`）。  
+文件名建议使用 **`<表名>_<步骤>.json`**（如 `sk_audit_create.json`），无需重复技能前缀，因路径已包含技能名称，便于排错。
+
+** 禁止：**
+
+- 写到 `<skill>/tmp/` 或当前工作目录（污染 skill / 用户项目）
+- 硬编码 `/tmp`、`C:\Temp` 或任何固定路径（不跨平台）
+- 每步完成后主动 `rm` / `Remove-Item`（操作系统会清理，属多余 tool call）
+- 主动 `os.path.exists()` 检查（其本身即为一次 tool call）  
+  （使用 `os.makedirs(…, exist_ok=True)` 满足需求，不算主动检查）
+
+**临时文件可能被操作系统异步清理**，但仍遵循 **乐观调用 + 报错补救**：仅当脚本返回 `FileNotFoundError` 或 `配置文件不存在` 时，使用相同内容、**在相同的 `{系统临时目录}/{SKILL名称}/` 路径下重写**（重写前仍需 `os.makedirs(skill_dir, exist_ok=True)` 确保目录存在），切勿更换路径或回退至 skill 目录。
+
 ## 介绍组件时的完整性要求
 
 > **重要：** 当用户要求介绍流程设计器各组件时，必须包含以下内容，不可遗漏：
@@ -510,6 +539,295 @@ xml_new = xml[:insert_pos] + cc_tag + xml[insert_pos:]
 
 # 3. saveProcess + deployProcess（见规则13）
 ```
+
+---
+
+### 规则20：callActivity `flowable:in` 变量传参必须用 `source`，不得用 `sourceExpression`（⚠️ 强制）
+
+**现象：** 前端「自定义输入变量」弹窗中，**源头(Source)** 字段为空，只有目标(Target)有值；但实际 XML 中写的是 `sourceExpression="${assigneeUserId}"`。
+
+**根因：** 前端解析 `flowable:in` 元素时，只读取 `source` 属性填充 Source 字段，`sourceExpression` 属性被忽略，因此显示为空白。
+
+**强制规则：会签 callActivity 传递 `assigneeUserId` 时，必须使用 `source`，不能使用 `sourceExpression`。**
+
+```xml
+<!-- ❌ 错误 —— 前端 Source 显示为空 -->
+<flowable:in sourceExpression="${assigneeUserId}" target="assigneeUserId" />
+
+<!-- ✅ 正确 —— 前端正常显示 assigneeUserId -->
+<flowable:in source="assigneeUserId" target="assigneeUserId" />
+```
+
+> `assigneeUserId` 在多实例循环中已通过 `flowable:elementVariable="assigneeUserId"` 自动成为流程变量，直接用 `source` 传递即可，效果等价。
+
+---
+
+### 规则21：向已有流程插入节点后，必须完整重写 BPMNDiagram 区域，禁止增量偏移坐标（⚠️ 强制）
+
+**现象：** 在中间插入一个节点后，对 DI 区域做「y > 阈值 则 y += SHIFT」的全局偏移，导致连线 waypoint 混乱、分支线变形、网关连线断裂。
+
+**根因：** 增量偏移逻辑无法准确区分「主干点」与「分支中间过渡点」，网关分支的中间 waypoint（如 y=296、y=416 等中转坐标）被错误偏移，造成连线弯折方向错误。
+
+**强制规则：凡是向已有 BPMN 流程中插入或删除节点，必须按新的节点序列从零重新计算并重写整个 `<bpmndi:BPMNDiagram>` 区块，不得对已有 DI 坐标做增量加减。**
+
+```python
+# ❌ 错误 —— 增量偏移，连线必然混乱
+di_part_new = re.sub(r'y="(\d+)"', lambda m: f'y="{float(m.group(1))+130}"' if float(m.group(1)) > 186 else m.group(0), di_part)
+
+# ✅ 正确 —— 完整重写 BPMNDiagram
+NEW_DI = """  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane ...>
+      <!-- 按新节点顺序逐一列出所有 Shape 和 Edge，坐标从零计算 -->
+      ...
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>"""
+
+di_start = xml.find('<bpmndi:BPMNDiagram')
+di_end   = xml.find('</bpmndi:BPMNDiagram>') + len('</bpmndi:BPMNDiagram>')
+xml = xml[:di_start] + NEW_DI + xml[di_end:]
+```
+
+**重写 DI 时的布局规范（主干垂直流程）：**
+
+| 元素类型 | 宽×高 | 居中 x | 分支左中心 x | 分支右中心 x |
+|---------|--------|--------|------------|------------|
+| startEvent / endEvent | 36×36 | 382 | — | — |
+| userTask / callActivity | 100×80 | 350 | 260（左） | 440（右） |
+| parallelGateway / exclusiveGateway | 50×50 | 375 | — | — |
+
+- 主干元素纵向间距（底部到下一元素顶部）：**40px**
+- 网关到分支节点之间加 20px 中转 waypoint（`y = 网关底+20`，左右分叉）
+- 分支节点回聚合网关同理（`y = 分支底+20`，左右向中汇聚）
+- Edge 全部使用折线（L 形），禁止斜线
+
+---
+
+### 规则22：`saveProcess` 新建流程后禁止直接读 `result['obj']` 取 ID（⚠️ 强制）
+
+**现象：** 新建流程（`processDefinitionId='0'`）调 `saveProcess`，返回 `success=True` 但 `result` 字段为 null 或不含 `obj`，直接访问 `r['result']['obj']` 抛 `KeyError: 'result'`。
+
+**根因：** `saveProcess` 的 `result` 结构因版本/场景而异：新建时 `result` 有时为 null，编辑时 `result['obj']` 也可能为 null。不能假设固定结构。
+
+**强制规则：新建流程后必须按 processKey 或 processName 重新查询取得真实 ID，禁止直接读 `result['obj']`。**
+
+```python
+# ❌ 错误 —— result 可能为 null
+r = save_process(...)
+new_id = r['result']['obj']  # KeyError
+
+# ✅ 正确 —— 保存后重新查询
+r = save_process(...)
+assert r.get('success'), f"保存失败: {r.get('message')}"
+# 按 processKey 查
+kw = urllib.parse.quote(process_key)
+r2 = api_get(f'/act/process/extActProcess/list?pageNo=1&pageSize=20&processKey={kw}')
+records = r2.get('result', {}).get('records', [])
+matched = [p for p in records if p['processKey'] == process_key]
+if not matched:
+    # processKey 查不到时按 processName 查
+    kw2 = urllib.parse.quote(process_name)
+    r3 = api_get(f'/act/process/extActProcess/list?pageNo=1&pageSize=20&processName={kw2}')
+    matched = [p for p in r3.get('result', {}).get('records', []) if p['processKey'] == process_key]
+new_id = matched[0]['id']
+```
+
+---
+
+### 规则23：所有子流程的 `nodes_str` 必须包含 startEvent 节点（⚠️ 强制）
+
+**现象：** 创建子流程时 `nodes_str` 只含 userTask，前端「流程配置 → 流程节点」列表中缺少「开始」节点，无法为其配置表单地址。
+
+**根因：** `nodes_str` 决定了 `ext_act_process_node` 中哪些节点被持久化。startEvent 虽在 XML 中存在，但不在 `nodes_str` 里就不会写入节点配置表，前端列表中就看不到。
+
+**强制规则：任何子流程（会签子流程、调用子流程等）保存时，`nodes_str` 必须同时包含 start 节点和所有 userTask 节点。**
+
+```python
+# ❌ 错误 —— 只含 userTask，start 节点不出现在前端列表
+nodes_str = 'id=task_cs_parallel###nodeName=会签审批@@@'
+
+# ✅ 正确 —— 包含 start
+nodes_str = 'id=start###nodeName=开始@@@id=task_cs_parallel###nodeName=会签审批@@@'
+```
+
+---
+
+### 规则24：子流程的开始节点表单地址默认继承主流程，formEditStatus 按需设置（⚠️ 强制）
+
+**现象：** 子流程开始节点在前端节点列表中显示，但 PC/移动端表单地址为空。
+
+**根因：** 子流程通过 `JG_SUB_MAIN_PROCESS_ID` 共享主流程表单数据，其开始节点需要配置与主流程节点相同的表单 URL，才能在子流程运行时正确渲染表单。
+
+**规则：**
+- **表单地址**：用户未明确指定时，默认从主流程现有节点中取第一个有地址的节点 URL 继承
+- **`formEditStatus`**：**不强制为 1**，视节点用途决定：
+  - 需要**编辑**表单的节点（如草稿、填写）→ 设 `formEditStatus=1`
+  - 仅**查看**表单的节点（如审批查看）→ 不设或保持默认（不需要 `formEditStatus=1`）
+  - 开始节点通常只需配置地址，**无需强制设置** `formEditStatus`，除非子流程需要在开始时编辑表单
+
+**操作步骤（保存子流程后执行）：**
+
+```python
+# 1. 从主流程节点中取表单地址（取第一个有地址的节点，通常是草稿节点或节点1）
+r = api_get(f'/act/process/extActProcessNode/list?processId={MAIN_PID}&pageNo=1&pageSize=50')
+main_nodes = r.get('result', {}).get('records', [])
+form_url = next((n['modelAndView'] for n in main_nodes if n.get('modelAndView')), None)
+assert form_url, '主流程未配置表单地址，无法继承'
+
+# 2. 查子流程节点，找 start
+r2 = api_get(f'/act/process/extActProcessNode/list?processId={SUB_PID}&pageNo=1&pageSize=50')
+sub_nodes = r2.get('result', {}).get('records', [])
+start_node = next((n for n in sub_nodes if n['processNodeCode'] == 'start'), None)
+
+# 3. 配置表单地址（formEditStatus 按需设置，不强制）
+start_node['modelAndView'] = form_url
+start_node['modelAndViewMobile'] = form_url
+# 如果该节点需要编辑表单，再加：
+# start_node['formEditStatus'] = '1'
+# cfg = json.loads(start_node.get('nodeConfigJson') or '{}')
+# cfg['formEditStatus'] = True
+# start_node['nodeConfigJson'] = json.dumps(cfg, ensure_ascii=False)
+api_put('/act/process/extActProcessNode/edit', start_node)
+
+# 4. 再次发布子流程使配置生效
+api_put('/act/process/extActProcess/deployProcess', {'id': SUB_PID})
+```
+
+### 规则25：生成 BPMN XML 后、saveProcess 前必须通过 validate_and_fix_layout 校验布局（⚠️ 强制）
+
+**现象：** 流程保存成功但设计器打开后多个节点堆叠在同一位置（y 坐标相同），连线指向错误坐标，流程图无法正常显示（如采购审批流程中 `task_countersign_1`/`script_node_1`/`svc_getManyDepts`/`end` 全部堆叠在 y=1546）。
+
+**根因：** `calc_layout` 在处理含多段会签链、复杂条件分支的长流程时，后段节点的位置可能未正确推进，导致多个节点共享同一 y 坐标并重叠。
+
+**强制规则：`bpmn_creator.py` 的 `main()` 函数已内置此校验，`validate_and_fix_layout` 在 `build_bpmn_xml` 之后、`save_process` 之前自动执行，无需手动调用。**
+
+检测逻辑（10 项检查，布局类任一触发即修复，结构类仅上报）：
+
+| 类别 | 检查项 | 说明 |
+|------|--------|------|
+| 布局 | **2a 节点矩形重叠** | 任意两个主节点 Shape 矩形面积相交（x+y 轴同时重叠）|
+| 布局 | **2b 节点间距不足** | 同列/同行相邻节点间隙 < 5px（含纵向/横向）|
+| 布局 | **2c 连线穿越节点** | 任意边的线段穿越非源/目标节点的矩形（含边界触碰）|
+| 布局 | **2d Shape标签遮挡节点** | BPMNShape 的 BPMNLabel 坐标落在其他节点矩形内部 |
+| 布局 | **2e 连线标签相互堆叠** | 两个 flow 标签矩形重叠（网关多分支出口 label 挤在同一点）|
+| 布局 | **2f 连线标签遮挡节点** | flow 标签矩形与非端点节点矩形重叠 |
+| 布局 | **2g 连线标签压线** | flow 标签矩形被其他连线线段穿越 |
+| 结构 | **3a start/end 数量** | startEvent ≠ 1 或 endEvent ≠ 1（仅上报，不触发重建）|
+| 结构 | **3b 连线整体合理性** | 连线源/目标节点不存在于 BPMNDiagram；中间节点缺入边或出边（孤立/悬空）|
+| 布局 | **4a 连线共线重叠** | 两条边的线段共线且重叠超过 6px |
+
+排除项：边界事件（`timer_`/`signal_boundary_`/`msg_boundary_` 前缀的 Shape）不参与检测，它们附着于父节点是合法位置。
+
+修复策略（自动执行）：
+1. **结构性问题**（3a/3b）仅打印错误，不触发重建（位置调整无法修复结构）
+2. **布局问题**（2a-2g、4a）触发以下修复：
+   - 按原 config 重新调用布局算法重建整个 `<bpmndi:BPMNDiagram>` 区块
+   - 重建后对所有带标签的 flow edge 执行标签重定位：将 BPMNLabel 移到路径中点旁侧（水平段→线上方，垂直段→线左侧），消除网关处标签堆叠
+3. 原 BPMN Process 部分（节点XML、连线XML、监听器等）保持不变
+
+```python
+# main() 中已内置，无需额外调用：
+bpmn_xml = build_bpmn_xml(config)
+bpmn_xml, _layout_fixed, _layout_issues = validate_and_fix_layout(bpmn_xml, config)
+if _layout_fixed:
+    print(f'  [布局优化] 已自动修复重叠问题: {_layout_issues}')
+result = save_process(args.api_base, args.token, config, bpmn_xml)
+```
+
+**手动修复已有流程（单独调用场景）：** 见本次采购审批流程的修复模式——获取流程 XML → 检测重叠 → 重建 BPMNDiagram → saveProcess + deployProcess。
+
+### 规则26：每个流程只允许一个 endEvent（⚠️ 强制）
+
+**现象：** 生成含 end_approved / end_rejected 等多个结束节点的流程后，设计器显示多个悬浮结束圆，流程图视觉混乱，用户无法判断正常结束路径。
+
+**根因：** 业务上区分"批准结束"/"驳回结束"等多结果，但 BPMN 中结果信息应通过流程变量或审批意见携带，而非用多个 endEvent 表达。
+
+**强制规则：所有路径统一汇聚到同一个 `end` endEvent。已有流程如存在多个 endEvent 必须合并。**
+
+```python
+# 合并多个 endEvent 到单一 end 的标准修复模式
+OLD_ENDS = {'end_approved', 'end_rejected', 'end_a', 'end_b'}  # 按实际调整
+
+# Step1: 所有 targetRef 指向 end
+for old_id in OLD_ENDS:
+    xml = xml.replace(f'targetRef="{old_id}"', 'targetRef="end"')
+
+# Step2: 删除旧 endEvent 元素（自闭合 + 完整标签两种形式）
+for old_id in OLD_ENDS:
+    xml = re.sub(rf'<bpmn2:endEvent[^>]*id="{old_id}"[^>]*/>', '', xml)
+    xml = re.sub(rf'<bpmn2:endEvent[^>]*id="{old_id}".*?</bpmn2:endEvent>', '', xml, flags=re.DOTALL)
+
+# Step3: 在保留的 end 节点中补充新 incoming 元素
+ns = "bpmn2:" if "<bpmn2:incoming>" in xml else ""
+xml = re.sub(
+    r'(<(?:bpmn2:)?endEvent\s[^>]*id="end"[^>]*>)',
+    lambda m: m.group(0) + ''.join(
+        f'\n      <{ns}incoming>{fid}</{ns}incoming>'
+        for fid in ['flow_approve', 'flow_reject']  # 按实际 flow id 调整
+    ),
+    xml
+)
+```
+
+> 检测是否已有多余 endEvent：`len(re.findall(r'<bpmn2:endEvent', xml)) > 1` 即触发合并流程。
+
+---
+
+### 规则27：有名称的 sequenceFlow 必须用显式 BPMNLabel 定位（⚠️ 强制）
+
+**现象：** 不指定 BPMNLabel 坐标时，前端自动将 label 放置在连线中点，与节点矩形或其他连线大概率重叠，尤其网关多出线时所有 label 挤在网关附近。
+
+**根因：** BPMNDiagram 中 BPMNEdge 缺少 `<bpmndi:BPMNLabel>` 子元素时，渲染器使用默认算法定位，无法感知周围节点布局。
+
+**强制规则：凡是 sequenceFlow 有 `name`（条件描述），BPMNEdge 必须包含 `<bpmndi:BPMNLabel><dc:Bounds>` 显式指定位置。**
+
+```xml
+<!-- ✅ 正确 —— 显式指定 label 位置（在连线中段旁偏移 5-15px） -->
+<bpmndi:BPMNEdge id="flow_short_di" bpmnElement="flow_short">
+  <di:waypoint x="675" y="240"/>
+  <di:waypoint x="200" y="240"/>
+  <di:waypoint x="200" y="320"/>
+  <bpmndi:BPMNLabel><dc:Bounds x="388" y="222" width="80" height="14"/></bpmndi:BPMNLabel>
+</bpmndi:BPMNEdge>
+
+<!-- ❌ 错误 —— 无 BPMNLabel，渲染器自动放置，必然与节点重叠 -->
+<bpmndi:BPMNEdge id="flow_short_di" bpmnElement="flow_short">
+  <di:waypoint x="675" y="240"/>
+  <di:waypoint x="200" y="320"/>
+</bpmndi:BPMNEdge>
+```
+
+**BPMNLabel 坐标计算原则：**
+- 水平段：`x = 连线水平段中点 - label宽/2`，`y = 线段 y - 18`（线上方）
+- 垂直段：`x = 线段 x + 5`，`y = 连线垂直段中点 - 7`（线右侧）
+- L 形折线：取最长段的中点做偏移
+- `width` 建议 60–90（中文 4-6 字），`height=14`
+
+---
+
+### 规则28：结构性网关（分叉/汇合用途）禁止添加 name 属性（⚠️ 强制）
+
+**现象：** 为 parallelGateway、inclusiveGateway 的汇合节点加了"并行审批汇合"、"类型审批汇合"等 name，前端在网关菱形旁边渲染浮动文字 label，视觉上噪音大且无实际意义。
+
+**规则：**
+- **禁止加 name**：仅起分叉/汇合作用的网关（parallelGateway 全部、inclusiveGateway 汇合节点）
+- **可以加 name**：有业务判断含义的网关（exclusiveGateway 判断条件、inclusiveGateway 分叉节点）
+
+```python
+# 去除结构性网关 name 的标准模式
+for gw_id in ['gw_par', 'gw_par_join', 'gw_incl_join']:
+    xml = re.sub(rf'(id="{gw_id}"[^>]*?)\s+name="[^"]*"', r'\1', xml)
+    xml = re.sub(rf'(\s+name="[^"]*")([^>]*id="{gw_id}")', r'\2', xml)
+```
+
+| 网关类型 | 加 name？ | 示例 |
+|---------|---------|------|
+| exclusiveGateway（判断） | ✅ 加（说明判断维度） | `name="请假天数判断"` |
+| inclusiveGateway（分叉） | ✅ 加（说明判断维度） | `name="请假类型判断"` |
+| parallelGateway（分叉） | ❌ 不加 | 无 name |
+| parallelGateway（汇合） | ❌ 不加 | 无 name |
+| inclusiveGateway（汇合） | ❌ 不加 | 无 name |
+
+---
 
 ## 前置条件
 
@@ -1313,6 +1631,12 @@ python "<jeecg-bpmn skill目录>/scripts/bpmn_oa.py" \
 | 职级审批节点"职务级别"为空 | `getApplyUserDeptPositionLevel` 参数错误，必须传三个参数 `(sys_org_code, applyUserId, 'positionId')`，不能用 `(execution, 'positionId')`（规则17） |
 | 删除 XML 行后 deploy 报 `cvc-complex-type.2.4.a` 无效内容 | 整行删除时丢失了同行的 `</bpmn2:extensionElements>` 等结束标签。探查时必须用 `repr(line)` 确认行内完整内容，删除时只删目标标签，保留同行其他内容（规则18） |
 | `saveProcess` 成功但提交了损坏的 XML，deploy 失败后再读取已是损坏版本 | `saveProcess` 持久化不依赖 deploy 成功。保存前必须先用 `ET.fromstring()` 本地校验 XML 结构合法性（规则19） |
+| callActivity 变量设置面板「源头(Source)」显示为空 | `flowable:in` 使用了 `sourceExpression` 属性，前端只识别 `source`。改为 `<flowable:in source="assigneeUserId" target="assigneeUserId" />`（规则20） |
+| 向已有流程插入节点后连线全部混乱、分支变形 | 增量偏移 DI 坐标导致网关中转 waypoint 错位。必须完整重写整个 `<bpmndi:BPMNDiagram>` 区块，按新节点序列从零计算坐标（规则21） |
+| 新建流程后 `r['result']['obj']` 报 `KeyError` | `saveProcess` 新建时 `result` 可能为 null，必须保存后按 processKey/processName 重新查询取 ID（规则22） |
+| 子流程前端节点列表缺少「开始」节点 | `nodes_str` 未包含 `id=start###nodeName=开始@@@`，startEvent 未写入节点配置表（规则23） |
+| 子流程开始节点表单地址为空，无法打开表单 | start 节点需配置主流程相同的表单地址（PC/移动端）；`formEditStatus` 按需设置，查看表单不需要设为 1，编辑表单才需要（规则24） |
+| 保存后流程图多个节点堆叠在同一位置（y 坐标重叠）、连线乱飞 | `calc_layout` 对长流程/多会签链未正确推进 y 坐标。`main()` 已内置 `validate_and_fix_layout` 在保存前自动检测并重建 BPMNDiagram（规则25）；已有流程需手动：获取 XML → 检测重叠 → 重建 DI → saveProcess + deploy |
 
 ## 数据库配置表
 

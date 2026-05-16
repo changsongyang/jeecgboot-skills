@@ -37,8 +37,8 @@
 # 空值保护
 =INTVAL(#{db.salary})
 
-# 字符串拼接
-=CONCAT(#{db.province},#{db.city},#{db.area})
+# 字符串拼接（字符串字段必须加单引号，否则 Aviator 解析为变量名→null）
+=CONCAT('#{db.province}','#{db.city}','#{db.area}')
 ```
 
 ---

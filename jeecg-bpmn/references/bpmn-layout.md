@@ -1,5 +1,17 @@
 # 节点 ID 命名与图形布局规则
 
+## ⛔⛔ 三条强制布局规范（每次生成流程必须遵守，违反必须修复）
+
+> 这三条规范来自多次实测踩坑，**不遵守会导致用户明确反馈要求重做**。
+
+| 规范 | 规则 | 详见 |
+|------|------|------|
+| **单一结束节点** | 每个流程**只允许 1 个 endEvent**，end_approved / end_rejected 等全部合并到 `end` | SKILL.md 规则26 |
+| **显式 BPMNLabel** | 有名称的 sequenceFlow 必须在 BPMNEdge 中包含 `<bpmndi:BPMNLabel><dc:Bounds .../>` | SKILL.md 规则27 |
+| **结构性网关不加 name** | parallelGateway 全部、inclusiveGateway 汇合节点：**不加 name 属性** | SKILL.md 规则28 |
+
+---
+
 ## ⛔ 严重禁令：自动布局的失效场景（已多次实测）
 
 > **凡流程同时包含以下任意两项，禁止使用 `bpmn_creator.py` 自动布局，必须手工计算坐标：**
@@ -492,3 +504,153 @@ bc.deploy_process(API_BASE, TOKEN, result.get('obj') or PROCESS_ID)
 | flow_bgcheck_fail（不通过→end_fail） | `(425,591)→(602,591)` | 同行直接水平 |
 | flow_fin_rej（财务拒绝→end_fail） | `(450,696)→(540,696)→(540,591)→(602,591)` | 右行→向上→进入 |
 | flow_salary_low（≤15000 跳过会签） | `(375,801)→(230,801)→(230,1026)→(350,1026)` | 左绕旁路 |
+
+---
+
+## 6. 多分支扇出布局（6+ 条分支从同一网关发出）
+
+### 6.1 设计约束：一个开始节点 + 一个结束节点
+
+> **强制规则：每个流程只允许存在一个 startEvent 和一个 endEvent。**
+>
+> 多 endEvent 问题表现：设计器中出现大量"悬浮"结束圆，流程图视觉混乱，用户无法判断正常结束路径。
+>
+> **实测踩坑**：初版生成了 9 个 endEvent（end_a / end_b / end_cd / end_e / end_f / end_small / end_medium / end_detail / end_quick），用户明确反馈"每个流程只允许存在一个开始节点，一个结束节点"后需要重建。
+>
+> **修复方法**：
+> 1. 保留流程定义 XML 不变（不重新运行 bpmn_creator.py）
+> 2. 通过字符串替换把所有 `targetRef="end_xxx"` 改为 `targetRef="end"` — **必须用字符串 replace，不能用正则**，因为 flowName 中可能含 `/` 导致 `[^/]*` 截断
+> 3. 用正则删除所有旧 endEvent 元素（自闭合 + 完整两种形式）
+> 4. 在 `</bpmn2:process>` 前插入单个 `<bpmn2:endEvent id="end" name="结束">` 含全部 incoming refs
+> 5. 检查是否已存在时：必须用 `'<bpmn2:endEvent id="end"'` 而非 `'id="end"'`（后者是子串，会误匹配 `id="end_medium"` 等）
+
+```python
+# ✅ 正确：直接字符串替换，不受 flow name 中 "/" 影响
+OLD_ENDS = {'end_a','end_b','end_cd','end_e','end_f','end_small','end_medium','end_detail','end_quick'}
+for old_id in OLD_ENDS:
+    xml = xml.replace(f'targetRef="{old_id}"', 'targetRef="end"')
+
+# ✅ 正确：幂等删除，防止二次运行时产生重复 id
+xml = re.sub(r'<bpmn2:endEvent[^>]+id="end"[^>]*/>\s*', '', xml)
+xml = re.sub(r'<bpmn2:endEvent[^>]+id="end"[^>]*>.*?</bpmn2:endEvent>\s*', '', xml, flags=re.DOTALL)
+# 然后再插入新 end event
+
+# ❌ 错误：正则 targetRef 替换，当 flow name 含"/" 时被截断
+xml = re.sub(r'<bpmn2:sequenceFlow\b[^/]*/>', fix_target, xml)  # [^/]* 遇到 "/" 停止
+```
+
+---
+
+### 6.2 水平 L→R 布局策略（适用于 6 条以上平级分支）
+
+> **触发条件：** 单个网关有 5 条以上出线（如 6 个 apply_type 分支），且各分支深度不一（有的 1 步到终点，有的需要 3-4 步子流程）。
+>
+> **原因：** 垂直主轴布局在此场景下会把所有分支节点水平堆叠在同一行，严重重叠；水平 L→R 布局每条分支独占一个 y 行，向右延伸，互不干扰。
+
+**布局方案：**
+
+```
+主干（左侧，y≈760）：start → task_draft → gw1_type
+                                   │
+       ┌───────────────────────────┼──────────────────────────────────────────┐
+       │ 垂直扇出（x=515 脊柱线）  │                                          │
+       ↓                           ↓                          …               ↓
+分支A (y=90)：   gw_par_split → task_finance + task_legal → gw_par_join ──→ end
+分支B (y=320)：  gw_inc_split → task_large_amount + task_nonormal → gw_inc_join → task_summary ──→ end
+分支C/D (y=630)：task_manual  → task_expert + task_direct ──→ end
+分支E (y=880)：  task_cs_seq ──→ end
+分支F (y=1040)： task_cs_par ──→ end
+默认 (y=1220)：  gw2_amount  → task_small / task_medium / task_large → gw3_desc → task_detail ──→ end
+                                                                                            ↑
+                                                           右侧汇流公路（x=HIGHWAY_X）──────┘
+单一结束（右侧中央，y=760）：end
+```
+
+**关键参数：**
+```python
+HIGHWAY_X = 1390   # 所有分支末节点先水平到此列，再垂直到 END_CY
+END_CX    = 1460   # end 事件中心 x
+END_CY    = 760    # end 事件中心 y（与主干同行）
+
+# gw1_type → 分支：经过脊柱线 x=515 做 L 形路由
+def gw1_to_branch(gw1_cx, gw1_cy, spine_x, branch_entry_x, branch_cy):
+    return [(gw1_cx+25, gw1_cy), (spine_x, gw1_cy), (spine_x, branch_cy), (branch_entry_x, branch_cy)]
+
+# 所有末节点 → end：经过公路
+def to_end(src_right_x, src_cy, highway_x, end_cx, end_cy):
+    return [(src_right_x, src_cy), (highway_x, src_cy), (highway_x, end_cy), (end_cx-18, end_cy)]
+```
+
+---
+
+### 6.3 多分支水平布局的行间距规则（防止重叠）
+
+> **实测踩坑**：分支 B 的 task_nonormal（y=395）与分支 C/D 的 task_expert（y=495）同在 x=820 列，底边到顶边仅 20px，视觉上严重重叠。
+
+**规则：相邻分支中，同 x 列的任意两个任务框，底边到顶边间距 ≥ 80px（建议 100px）。**
+
+```python
+# 任务框高度 80px，则分支行间距计算：
+# 上方分支最低任务的 cy_max + 40（半高）→ 下方分支最高任务的 cy_min - 40（半高）≥ 80
+# 即：cy_min_lower - cy_max_upper ≥ 160px（两个任务中心之间）
+
+# 行间距参考：
+# A 行最低任务 cy=150（bottom=190）→ B 行最高任务 cy=265（top=225）：gap=35px ✓（实测可接受）
+# B 行最低任务 cy=395（bottom=435）→ C/D 行最高任务 cy=575（top=535）：gap=100px ✓✓ 安全
+# C/D 行最低任务（bottom=755）→ E 行最高任务（top=840）：gap=85px ✓
+
+# 经验值：两个相邻有子任务的分支行，主体高度差 ≥ 250px
+```
+
+---
+
+### 6.4 边界定时器位置：必须中心点在任务框边缘（不能悬浮）
+
+> **实测踩坑**：将定时器边界事件放在任务框边界之外（如 cx=885, cy=1175，而任务框右边界为 x=880），会导致设计器显示定时器悬浮、与任务无视觉连接（"连线存在间隔，没连上"）。
+
+**强制规则：** 边界事件的圆心坐标必须落在宿主任务框的边界线上。
+
+```python
+# task_medium: center=(820, 1300), size=120×80
+# bounds: x=[760,880], y=[1260,1340]
+
+# ✅ 正确：放在底边中心（center on bottom edge）
+BEV_CX = 820   # 底边中心 x = task_cx
+BEV_CY = 1340  # 底边 y = task_cy + task_h/2 = 1300 + 40 = 1340
+
+# ✅ 或放在右边中心（center on right edge）
+BEV_CX = 880   # 右边 x = task_cx + task_w/2 = 820 + 60
+BEV_CY = 1300  # 右边中心 y = task_cy
+
+# ❌ 错误：偏移到任务框外部（center beyond edge）
+BEV_CX = 885   # 880+5，超出右边界，视觉上脱离任务框
+BEV_CY = 1175  # 也不在任务框范围内
+```
+
+**定时器流线路由（从底边出发向右到公路）：**
+```python
+# 底边出发：从 (BEV_CX+18, BEV_CY) 向右
+timer_flow_pts = [(BEV_CX + 18, BEV_CY), (HIGHWAY_X, BEV_CY), (HIGHWAY_X, END_CY), (END_CX-18, END_CY)]
+```
+
+---
+
+### 6.5 包含网关默认流线（绕过中间任务节点）
+
+> **实测踩坑**：包含网关（inclusiveGateway）的 default 流从 gw_inc_split 直达 gw_inc_join，若路由经过任务节点所占的 y 区间，会穿越任务框，视觉混乱。
+
+**规则：默认流线必须绕行至两侧任务框的外部。**
+
+```python
+# gw_inc_split (620, 320) → gw_inc_join (1020, 320)，绕过中间的 task_large_amount(y=265) 和 task_nonormal(y=395)
+# task_nonormal bottom = 395+40 = 435 → 绕行 y=490（低于 435）
+
+BELOW_Y = 490  # 低于 B 分支所有任务的底边
+inclusive_default_flow = [
+    (gw_inc_split_cx + 25, gw_inc_split_cy),  # 出网关右侧
+    (gw_inc_split_cx + 25, BELOW_Y),           # 向下绕到任务框下方
+    (HIGHWAY_X - 20,       BELOW_Y),           # 向右（公路左侧 20px，避免压线）
+    (HIGHWAY_X - 20,       gw_inc_join_cy),    # 向上进入 join 位置
+    (gw_inc_join_cx - 25,  gw_inc_join_cy),    # 进入 join 左侧
+]
+```

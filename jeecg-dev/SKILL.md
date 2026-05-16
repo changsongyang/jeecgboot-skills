@@ -40,6 +40,7 @@ description: JeecgBoot 开发规范。当编写/修改 JeecgBoot 代码、应用
 - **单行注解的新增 / 修改**：例如给已有方法补 `@RequiresPermissions("xxx")`、`@Transactional`、`@Deprecated`、Swagger/Knife4j `@Operation`、`@Schema(description=...)`、`@TableField(...)`、`@JsonProperty(access=...)`、Lombok 类级注解（`@Slf4j`/`@Data` 等）。这类改动 SVN diff 一眼可见、无业务分支逻辑，加 2 行 `update-begin/end` 包 1 行注解会让 diff 噪音翻倍
 - 字段访问修饰符微调（如 `private` → `protected`）、`final` 添加等单行属性变更
 - 删除单个 `@Excel`/`@Schema` 之类不影响调用方的注解
+- **YAML / properties 配置文件（`.yml`/`.yaml`/`.properties`）的任何改动**：不加 `update-begin/end` 痕迹注释。需要说明修改原因时，直接用普通 `#` 注释写在被改的配置项旁边即可；变更条目记录到 `代码修改日志` 文件。理由：配置文件 diff 一眼可见、痕迹注释会破坏 YAML 缩进结构、且 `#update-begin/end` 在 YAML 里无业务逻辑可言
 
 判断标准：**"这行改动是否需要后人通过痕迹注释才能理解为什么改？"**。
 - 影响业务流程、含有 if/loop/异常处理、修改了方法体内多行逻辑 → **加** `update-begin/end`

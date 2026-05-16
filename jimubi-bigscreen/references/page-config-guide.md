@@ -103,3 +103,5 @@ bi_utils._request('POST', '/drag/page/edit', data=p)
 - `desJson` 是 JSON 字符串，修改前需 `json.loads()`，修改后需 `json.dumps()` 回写
 - 水印配置在 `desJson.waterMark` 中，不是页面顶层字段
 - 背景色与背景图同时生效，背景图叠加在背景色之上
+- 🚨 **想要纯色背景必须同时清掉 `backgroundImage`**：仅设 `backgroundColor` 而不清空 `backgroundImage`，原背景图会盖住纯色——用户看到的还是图。整屏改主色调（如改成中国红/海洋蓝纯色）时必须同时 `p['backgroundImage'] = ''`。`page_ops.py set-bg` 子命令也只改 backgroundColor 不动 backgroundImage，需自行调 `set-bgimg --image ""` 或写整页 POST 脚本一次搞定
+- 🚨 **`bi_utils.save_page()` 不发送 `backgroundColor` 字段**：`save_page` 的 payload 只含 id/name/template/updateCount/style/theme/backgroundImage/designType/desJson 共 9 个字段（bi_utils.py:461）——修改 backgroundColor 必须走完整 page 实体 POST（先 `_request('GET','/drag/page/queryById')` 拿全实体，改完直接 POST `/drag/page/edit`），不能依赖 `save_page`。同理可推：若 save_page 未列入的页面字段（如未来新增），都需走整页 POST 路径

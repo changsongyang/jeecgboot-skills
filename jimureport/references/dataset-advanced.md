@@ -1147,6 +1147,7 @@ result = api_request('/jmreport/link/saveAndEdit', link_data)
 - Redis 中存储的数据必须是 JSON 格式，系统通过解析 JSON 结构自动识别字段
 - 解析和保存流程与普通 SQL 数据集完全一致，只是 dbSource 指向 Redis 数据源
 - **⚠️ Redis JSON 字段名必须全小写**：JimuReport 读取 Redis JSON 时将所有字段名强制转为小写，存入 Redis 的 JSON key、`fieldList` 的 `fieldName`、以及单元格绑定 `#{db.fieldName}` 三处必须统一使用全小写（如 `productname`）。驼峰命名（如 `productName`）会导致该列数据全部为空，而其他全小写字段正常显示。
+- **⚠️ Redis 中存储的 JSON 必须是裸数组 `[{...},{...}]`**，**不能**用 `{"data":[...]}` 包裹（与 JSON 数据集规则相反）。包裹后 `queryFieldBySql` 报 "执行成功，但是数据为空，无法解析报表字段！"。实测：`SET orderinfo '[{...}]'` 可以正常解析；`SET orderinfo '{"data":[{...}]}'` 解析失败。
 
 ---
 
@@ -1313,6 +1314,18 @@ def is_safe_field(fname):
 safe_fields = [f for f in field_list if is_safe_field(f['fieldName'])]
 # 只用 safe_fields 保存到数据集和绑定到报表
 ```
+
+#### 坑5：dbUrl 不解析 query string
+
+**现象：** dbUrl 写 `host:port/db?authSource=admin`，预览报 `Exception authenticating ... source='db?authSource=admin'`（整段被当 authSource）。
+
+**解决：** 用 admin 库 root 帐号给目标库建同名用户：`admin_client[target_db].command('createUser', name, pwd=pwd, roles=[{'role':'readWrite','db':target_db}])`，之后 dbUrl 用纯 `host:port/target_db` 即可。或改连接串方式 `mongodb://user:pwd@host:port/?authSource=admin`（dbUsername/dbPassword 留空，但此路径下 `mongo.SQL` 失效，须用原生语法）。
+
+#### 坑6：mongo.SQL 报 NoSuchMethodError listCollectionNames
+
+**现象：** `select * from mongo.xxx` 报 `NoSuchMethodError: 'MongoIterable MongoDatabase.listCollectionNames()'`，根因是服务端 mongo-java-driver 与 calcite-mongodb 版本不匹配。
+
+**解决：** 脚本必须 try `mongo.SQL` → except 自动降级到 `db.getCollection('xx').find({})`，**save_db 的 dbDynSql 也要传降级后的 sql**（与解析时保持一致）。
 
 #### 坑4：queryFieldBySql 脚本调用失败但 UI 正常
 

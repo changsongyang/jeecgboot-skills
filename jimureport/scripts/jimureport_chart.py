@@ -177,37 +177,48 @@ def update_chart_config(
     return updated
 
 
-def parallel_fill_charts(session: Session, charts: list[dict]) -> list[dict]:
+def parallel_fill_charts(session: Session, charts: list[dict],
+                          json_records_map: dict | None = None) -> list[dict]:
     """
-    并行回填 chartList 里的 SQL/API 图表数据（原地修改 + 返回列表）。
+    并行回填 chartList 里的 SQL/API/JSON 图表数据（原地修改 + 返回列表）。
     支持单系列、多系列、横向图、饼图/漏斗/仪表盘。并发上限 10。
+
+    json_records_map: {dbCode: [records]} — JSON 数据集（dbType=3）图表的本地填充数据。
+        parallel_fill_charts 对 JSON 数据集没有服务端查询接口，需调用方传入原始 records。
+        示例：json_records_map={"myDs": [{"name":"一月","value":120}, ...]}
+        未传或 dbCode 不在 map 中时，JSON 数据集图表保持原样（config 不变）。
     """
     def _fill_one(chart: dict) -> dict:
         ext = chart.get("extData", {})
         data_type = ext.get("dataType")
         data_id = ext.get("dataId")
-        if data_type not in ("sql", "api") or not data_id:
-            return chart
+        db_code = ext.get("dbCode", "")
 
-        payload = {
-            "apiSelectId": data_id,
-            "chartSetting": {
-                "chartId": ext.get("chartId", ""), "id": ext.get("chartId", ""),
-                "chartType": ext.get("chartType", ""), "dataType": data_type,
-                "apiStatus": ext.get("apiStatus", "1"), "dataId": data_id,
-                "dataId1": "", "dbCode": ext.get("dbCode", ""),
-                "axisX": ext.get("axisX", "name"), "axisY": ext.get("axisY", "value"),
-                "series": ext.get("series", ""),
-                "xText": ext.get("xText", ""), "yText": ext.get("yText", ""),
-                "linkIds": "", "source": "", "target": "", "isTiming": "", "intervalTime": "",
-                "isCustomPropName": ext.get("isCustomPropName", False), "run": 1,
-            },
-        }
-        if data_type == "api":
-            result = session.request("/qurestApi", payload)["result"]
-            rows = result.get("data") if isinstance(result, dict) else result
+        # JSON 数据集：使用调用方传入的本地 records 直接填充，无需查询服务端
+        if data_type == "json" and json_records_map and db_code in json_records_map:
+            rows = json_records_map[db_code]
+        elif data_type not in ("sql", "api") or not data_id:
+            return chart
         else:
-            rows = session.request("/qurestSql", payload)["result"]
+            payload = {
+                "apiSelectId": data_id,
+                "chartSetting": {
+                    "chartId": ext.get("chartId", ""), "id": ext.get("chartId", ""),
+                    "chartType": ext.get("chartType", ""), "dataType": data_type,
+                    "apiStatus": ext.get("apiStatus", "1"), "dataId": data_id,
+                    "dataId1": "", "dbCode": db_code,
+                    "axisX": ext.get("axisX", "name"), "axisY": ext.get("axisY", "value"),
+                    "series": ext.get("series", ""),
+                    "xText": ext.get("xText", ""), "yText": ext.get("yText", ""),
+                    "linkIds": "", "source": "", "target": "", "isTiming": "", "intervalTime": "",
+                    "isCustomPropName": ext.get("isCustomPropName", False), "run": 1,
+                },
+            }
+            if data_type == "api":
+                result = session.request("/qurestApi", payload)["result"]
+                rows = result.get("data") if isinstance(result, dict) else result
+            else:
+                rows = session.request("/qurestSql", payload)["result"]
         if not rows:
             return chart
 

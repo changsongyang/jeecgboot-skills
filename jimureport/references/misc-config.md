@@ -110,20 +110,20 @@ background = {
 
 ---
 
-## 4. 背景图 vs 套打（imgList）路径前缀对比
+## 4. 背景图 vs 套打背景图对比
 
-| 用途 | 字段 | 路径格式 |
-|------|------|---------|
-| 背景图 | `background.path` | `/jmreport/img/` + `message` |
-| 套打图片 | `imgList[].src` | `message`（直接使用，无前缀） |
+| 用途 | 字段位置 | 说明 |
+|------|---------|------|
+| 预览背景色/图（纯装饰） | `background.path` | 设计器和预览页显示底色，不参与打印叠印 |
+| 套打背景图（叠印到打印内容后） | `imgList[].src` + `isBackend:true` + `commonBackend:true` | 设计器预览和后端 PDF 均显示；`printConfig.bgImg` 对套打无效，留空即可 |
 
-> **关键区别：** 背景图路径需加 `/jmreport/img/` 前缀，套打路径直接使用上传返回的 `message` 值。
+> **关键区别：** `printConfig.bgImg` 对「套打设置」对话框**无效**（已验证 2026-05-08）。套打图片必须放在 `imgList`，同时设 `isBackend:true`（后端 PDF）和 `commonBackend:true`（设计器预览），缺任意一个图片不显示。完整模板见本文 §套打imgList配置。
 
 ---
 
 ## 5. 注意事项
 
-1. `printConfig.isBackend` 为 `false` 时背景图正常显示；套打（`isBackend: true`）时背景图不生效，应使用 `imgList`
+1. `printConfig.isBackend` 为 `false` 时 `background` 背景图正常显示；套打（`isBackend: true`）时必须用 `printConfig.bgImg` 设置背景图，`background` 须置为 `False`，两者同时存在会互相遮挡
 2. `width`/`height` 为字符串类型（`"1920"`），不是数字
 3. 保存 API 中 `background` 字段**直接传对象（dict）**，不要 json.dumps 成字符串；否则前端报 `Cannot use 'in' operator to search for 'repeat'` 错误
 
@@ -446,6 +446,12 @@ printConfig = {
     "marginX": 10,              # 左右边距(mm)
     "marginY": 10,              # 上下边距(mm)
 
+    # ===== 套打（isBackend=True 时有效）=====
+    # "bgImg":    "http://...",  # 套打背景图 URL（上传返回的 message 字段值）
+    # "bgOpacity": 1,            # 背景图不透明度（0-1）
+    # "bgWidth":  "100%",        # 背景图宽度
+    # "bgHeight": "100%",        # 背景图高度
+
     # ===== 回调 =====
     "printCallBackUrl": "",     # 打印回调接口URL（文档：https://help.jimureport.com/printNew/callback/）
 
@@ -638,6 +644,23 @@ jeecg:
 }
 ```
 
+### 套打报表（背景图叠印，已验证 2026-05-08）
+
+> ⚠️ 套打图片**不能**用 `printConfig.bgImg`，必须用 `imgList`。完整模板见本文 §套打imgList配置。
+
+```python
+# printConfig 只需标记纸张和套打模式，bgImg 留空
+"printConfig": {
+    "paper": "A4", "width": 297, "height": 210,
+    "definition": 1,
+    "isBackend": True,   # 必须 True（控制后端渲染模式）
+    "bgImg": "",         # 留空，图片通过 imgList 传递
+    "marginX": 0, "marginY": 0,
+    "layout": "landscape", "printCallBackUrl": "",
+}
+"background": False      # 关闭普通背景，避免遮挡套打图
+```
+
 ### 带水印的机密报表
 ```python
 "printConfig": {
@@ -813,7 +836,87 @@ jeecg:
 
 配置后，设计器纸张下拉列表中会出现自定义纸张选项。
 
-### 9.5 套打（isBackend）
+### 9.5 套打（isBackend）⚠️
+
+> 套打图片通过 `imgList` 传递，`printConfig.bgImg` 对套打无效，详见本文 §套打imgList配置。
+
+---
+
+## §套打imgList配置（完整模板，已验证 2026-05-08）
+
+套打图片存储在 jsonStr 顶层的 `imgList` 数组，**不是** `printConfig.bgImg`。
+
+### imgList 条目字段说明
+
+| 字段 | 说明 |
+|------|------|
+| `row` / `col` | 图片左上角锚点（通常 0,0） |
+| `colspan` / `rowspan` | 覆盖的列数和行数（应覆盖所有数据行列） |
+| `width` / `height` | 显示尺寸（px 字符串，与背景图实际像素匹配） |
+| `src` | 图片可访问 URL（MinIO 返回完整 URL，直接用） |
+| `isBackend` | `True` = 后端 PDF 渲染时叠加 |
+| `commonBackend` | `True` = 设计器预览中也显示；缺此字段设计器看不到图 |
+| `layer_id` | 随机16位字符串，与 row0 单元格的 `virtual` 键绑定 |
+| `virtualCellRange` | 仅列出 row0 各列的 `[row, col]`，不需要列出所有行 |
+
+### 完整代码模板
+
+```python
+import random, string
+
+def gen_layer_id():
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+
+# 图片上传（/sys/common/upload，MinIO 返回完整 URL）
+import requests, os
+with open(img_path, "rb") as f:
+    up = requests.post(f"{JEECG_BASE}/sys/common/upload",
+                       headers={"X-Access-Token": TOKEN},
+                       files={"file": (os.path.basename(img_path), f, "image/jpeg")})
+up_data = up.json()
+img_url = up_data["message"]  # MinIO 场景直接是完整 URL
+
+# imgList 条目
+NUM_COLS = 7   # 报表实际列数（需覆盖所有数据列）
+NUM_ROWS = 15  # 覆盖所有数据行（含余量）
+layer_id = gen_layer_id()
+
+img_entry = {
+    "row": 0, "col": 0,
+    "colspan": NUM_COLS,
+    "rowspan": NUM_ROWS,
+    "width":  "950px",      # 与实际图片宽度匹配
+    "height": "683px",      # 与实际图片高度匹配
+    "src": img_url,
+    "isBackend": True,      # 后端 PDF 渲染时叠加
+    "commonBackend": True,  # 设计器预览中也显示（必须）
+    "layer_id": layer_id,
+    "offsetX": 0, "offsetY": 0,
+    "virtualCellRange": [[0, c] for c in range(NUM_COLS)],  # 仅 row0
+}
+
+# row0 每个单元格加 virtual 键（与 layer_id 绑定）
+for c in range(NUM_COLS):
+    key = str(c)
+    if key not in rows["0"]["cells"]:
+        rows["0"]["cells"][key] = {"text": " ", "style": 0}
+    rows["0"]["cells"][key]["virtual"] = layer_id
+
+# base_save 传入 imgList
+session.request("/save", base_save(
+    report_id, designer,
+    rows=rows, cols=cols, styles=styles, merges=merges,
+    chartList=[], imgList=[img_entry],
+    printConfig={
+        "paper": "A4", "width": 297, "height": 210,
+        "definition": 1,
+        "isBackend": True,   # 控制后端渲染模式（必须 True）
+        "bgImg": "",         # 留空，图片通过 imgList 传递
+        "marginX": 0, "marginY": 0,
+        "layout": "landscape", "printCallBackUrl": "",
+    },
+    background=False,        # 关闭普通背景，避免遮挡套打图
+))
 
 套打时，打印内容的范围取决于**套打图片的尺寸**，超出图片边界的单元格数据不会被打印。设计时需确保所有内容都在套打图片范围内。
 

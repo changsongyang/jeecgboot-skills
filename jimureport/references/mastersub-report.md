@@ -131,16 +131,38 @@ save_db(session, report_id, SUB, "订单详情", sql=SQL_SUB,
 ### 行结构（全部单元格加 loopBlock:1）
 
 ```
-行0:    标题（非循环块）
+行0:    标题，loopBlock:1（必须在循环块内，所有列均需 loopBlock:1）
 行1-2:  主表信息 #{MAIN.field}，loopBlock:1
 行3:    子表列头（静态），loopBlock:1
 行4:    子表数据行 #{SUB.field}，loopBlock:1  ← 引擎按子表记录数重复
 行5:    间隔空行（height:8），loopBlock:1
-eri=5   ← 与实际末行对齐，不要设很大的值（子表少时产生大片空白）
+行6-40: 缓冲空行，每列均需空单元格 + loopBlock:1（为子表展开留空间）
+eri=40  ← 必须足够大；设小了子表无法展开
 ```
 
+> ⚠️ **sri 必须为 0**（标题行也要在循环块内），**eri 必须 ≥ 40**（子表展开需要缓冲行）。
+> 标题行的合并覆盖单元格（col 2 到 eci）也需要加 `loopBlock:1`，否则循环块识别不完整。
+> 缓冲行（行5到行eri）每列均需写空单元格 + `loopBlock:1`，不可省略。
+
 ```python
-loopBlockList = [{"sci": 1, "eci": 7, "sri": 1, "eri": 5, "index": 1, "db": MAIN}]
+loopBlockList = [{"sci": 1, "eci": 7, "sri": 0, "eri": 40, "index": 1, "db": MAIN}]
+
+# 行0 标题写法（合并后的空单元格也要 loopBlock:1）
+rows["0"] = {
+    "height": 48,
+    "cells": {
+        "0": {"text": " ", "style": STYLE_COL0},
+        "1": {"text": "报表标题", "style": STYLE_TITLE, "merge": [0, 6], "loopBlock": 1},
+        "2": {"text": "", "loopBlock": 1},
+        # ... 直到 eci 列，每列都要加 loopBlock:1
+    }
+}
+
+# 缓冲行（内容行之后到 eri，num_cols 为数据列数）
+for r in range(5, 41):
+    rows[str(r)] = {
+        "cells": {str(c): {"text": "", "loopBlock": 1} for c in range(1, num_cols + 1)}
+    }
 ```
 
 ### 主子表关联（与套打式相同）

@@ -681,9 +681,15 @@ def build_report(session, report_name, report_id, line_mock_url, pie_mock_url):
                     rows=rows, cols=cols, styles=styles, merges=merges,
                     chartList=chart_list))
 
-    # 7. 并行回填 SQL/API 图表数据
-    print(f"▶ 并行回填 SQL/API 图表数据")
-    parallel_fill_charts(session, chart_list)
+    # 7. 并行回填 SQL/API/JSON 图表数据
+    # JSON 数据集无服务端查询接口，需通过 json_records_map 传入原始 records
+    json_records_map = {
+        d["db_code"]: d["records"]
+        for d in datasets
+        if d["kind"] == "json"
+    }
+    print(f"▶ 并行回填图表数据（JSON 数据集 {len(json_records_map)} 个本地填充）")
+    parallel_fill_charts(session, chart_list, json_records_map=json_records_map)
 
     # 8. 最终 /save
     print("▶ 最终 /save（写入回填后的图表数据）")

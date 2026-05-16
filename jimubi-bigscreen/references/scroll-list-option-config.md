@@ -96,8 +96,14 @@
 |------|---------|------|--------|
 | 列显示名（表头） | `fieldMapping[i].name` | string | `'列名'` |
 | 数据字段 key | `fieldMapping[i].key` | string | 对应 chartData 字段名 |
-| 列宽（0=自动） | `fieldMapping[i].width` | number | `0` |
+| 列宽（像素） | `fieldMapping[i].width` | number | `0` |
 | 文字对齐 | `fieldMapping[i].textAlign` | string | `'left'` |
+
+> ⚠️ **width 规则（实测 2026-05-13）**：必须是**数字像素**，不是百分比字符串。
+> - `width > 0` → 该列固定 N 像素
+> - `width = 0` → 自动填充剩余宽度（其他列定宽后均分剩余空间）
+> - **所有列 width 全 0** → 按列数均分容器宽度
+> - 写 `"50%"`/`"25%"` 等百分比字符串无效，平台 fallback 0；只有部分列写百分比时，会造成"自动列意外吞掉剩余宽度"。spec_builder `handle_JScrollList` 已加防呆，检测字符串 width 自动改 0 并告警
 | 左边距 | `fieldMapping[i].marginLeft` | number | `0` |
 | 右边距 | `fieldMapping[i].marginRight` | number | `0` |
 

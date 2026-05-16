@@ -13,9 +13,11 @@
 | 404 / 签名失败 / Session / report_urls / make_designer / 参数名 | §API接口 | 138 |
 | Access denied / 连接失败 / dbSource / 密码 / 建表库不对 | §数据库数据源 | 176 |
 | 循环块不展开 / loopBlock / 主子表错位 / zonedEdition / loopTime | §循环块分组 | 189 |
-| UPPER / CEIL / DBSUM / LIKE / FreeMarker / widgetType / 下拉控件 | §表达式查询控件 | 210 |
+| UPPER / CEIL / DBSUM / LIKE / FreeMarker / widgetType / 下拉控件 / 范围查询控件不渲染 / searchMode=2 / update_db snake_case | §表达式查询控件 | 210 |
 | 执行太慢 / 多读文件 / 一键脚本被拒后重发 | §执行效率 | 226 |
 | 明细报表合计行 / funcname 无效 / 计算规则 / filterNegative / 合计行不出现 | §数据集保存 | 15 |
+| 套打背景图不显示 / imgList / bgImg / commonBackend / 套打设置面板空白 | §套打背景图 | 292 |
+| 钻取明细数据无过滤 / 参数名猜测 / leibie / category / API 钻取传参不生效 | §数据集保存 | 15 |
 
 ---
 
@@ -49,7 +51,8 @@
 | paramList 字段键名用 fieldName/fieldTxt | `Column 'param_name' cannot be null` | 正确键名：`paramName/paramTxt/paramValue/searchFlag/widgetType/searchMode` |
 | JavaBean 数据集 dbType 用 "0" | 显示为「SQL数据集」而非「JavaBean数据集」 | dbType 必须 **"2"**；chart_entry data_type 必须 **"javabean"** |
 | SQL field_list=[] 传空 | 字段明细「暂无数据」，图表无法绑定 | 先调 `parse_sql(session, sql, db_source=ds_id)` 拿字段列表再传给 save_db |
-| **SQL 表名照搬文档示例** | `save_db` 保存成功但预览报 `Table 'xxx' doesn't exist`，数据全空 | 示例表名（如 `test_order_main`）不代表用户环境存在。创建 SQL 数据集前必须：① `resolve_db_source` 取数据源 ID → ② `get_ds_connection(session, ds_id)` 取 MySQL 凭证 → ③ `SHOW TABLES LIKE 'xxx'` 验证表存在 → 不存在则先建表插数据 → ④ 再调 `parse_sql` 取字段。**禁止**硬编码 fieldList 跳过表存在性验证 |
+| **SQL 数据集未验证表存在性**（含用户自定义表名） | 报表创建成功但预览空白；或 `parse_sql` 返回空字段列表 | **无论表名来自文档示例还是用户指定，一律必须**：① `resolve_db_source` 取数据源 ID → ② `get_ds_connection(session, ds_id)` 取 MySQL 凭证 → ③ `execute_ds(session, ds_id, "SHOW TABLES LIKE 'xxx'")` 验证表存在 → 不存在则先建表（含字段定义）并插测试数据 → ④ 表存在但 `COUNT(*)=0` 也须插测试数据 → ⑤ 再调 `parse_and_save_dataset`。**此流程对所有 SQL 类报表强制，不得跳过** |
+| **API 数据集钻取参数名假设错误** | 钻取到明细报表后数据无过滤，全量显示 | 用户已提供 API URL 时，**不得假设参数名**（如 `?leibie=` / `?name=` 等）。必须先用不同参数名实际 HTTP 调用 API，对比返回条数，确认哪个参数名触发过滤后，再写 `api_url=...?param=${param}` 和 `paramList`。测试示例：`urllib.request.urlopen(url + '?category=' + enc)` 与无参数返回条数对比；条数减少即为正确参数名 |
 
 ---
 
@@ -78,9 +81,11 @@
 | API 图表字段名不是 name/value | 设计器「运行」后图表空白 | extData 设 `"isCustomPropName": True`，`xText` 设实际分类字段名，`yText` 设实际值字段名 |
 | JavaBean 图表调 /qurestSql 回填 | 返回 result:null | JavaBean 不支持设计态填充；/qurestSql/Api/Bean 均无效；**创建 JavaBean 图表时跳过回填** |
 | SQL 图表 config 无初始数据 | 设计器 ECharts 空白 | 创建 SQL 图表后必须调 `/qurestSql` 回填：转换后写入 config.xAxis.data/series[i].data/legend.data 再 /save |
+| **JSON 数据集图表不传 json_records_map** | 预览图表全部空白（只显示标题文字）| `parallel_fill_charts` 无 JSON 查询接口，默认跳过 dbType=3 图表。**必须传** `json_records_map={dbCode: records}` 触发本地填充，或在 `chart_entry` 前手动预填 ECharts config（xAxis.data / series[0].data / legend.data）。静态内嵌数据（scatter/radar/graph/map）设 apiStatus="0" + _NONE() 不受此影响 |
 | SQL/API 散点图用 `parallel_fill_charts` 回填 | scatter.simple 只见一行点贴在 y 轴/x 轴；scatter.bubble 多系列错位 | `parallel_fill_charts` 默认把单系列图按 `cfg.series[0].data = y_data`（1D）回填，散点图 data 必须是 `[[x,y], ...]` 二元对。**scatter.simple / scatter.bubble 必须自定义回填**：单系列 `series[0].data = [[r[axisX], r[axisY]] for r in rows]`；多系列按 series 字段分组，每系列独立 `[[x,y]]` 数组并设 `legend.data` |
 | 图表「启用背景」只改 `chart.backgroud` | 背景色 UI 显示已启用但实际渲染没出现 | 图表背景**存两份**且必须同步：`chartList[i].backgroud.color`（积木存储字段，注意拼写少 n）+ `config.backgroundColor`（ECharts 根级，**真正控制渲染**）。设计器 UI 手动改时两处自动同步；AI 走 patch 必须**两处一起写**，否则 backgroud.enabled=true 也不出效果。颜色支持 `#hex` / `rgba(r,g,b,a)` |
 | **map.scatter `geo.map` 用了 `"100000"`** | 预览页面图表完全空白（设计页正常）；`"100000"` 是 `map.simple` 区域地图的内部编码，ECharts 不识别 | `map.scatter` 的 `geo.map` 必须用 `"china"`（字符串）；同时**禁止**带 `mapCode/mapName/mapLevel/mapType` 字段——这四个字段是 `map.simple` 专用，加在 `map.scatter` 上会导致地图无法加载 |
+| **图表 row 行号与数据行展开冲突（重叠/折叠）** | 图表标题或内容叠加在数据行上，图表和表格混在一起 | 图表 `row` 是**绝对坐标**，数据行展开时不推移其他行，而是直接用后续行号填充。例如数据行在 row=4，共4条数据，实际占用 row=4~7；图表若设在 row=6 则与第3条数据重叠。**正确做法**：`chart_start_row = 数据起始行 + max_data_rows + 缓冲`（至少 +3）。分页时用 `chart_start_row = 数据起始行 + page_size + 缓冲`。virtualCellRange 只放第一行锚点 `[[chart_start_row-1, 0]]`（0-based） |
 
 ---
 
@@ -108,6 +113,8 @@
 | groupRight 月份列头字母序错误 | "10月"排在"1月"前面 | 月份字段用零填充：`CONCAT(LPAD(month_no,2,'0'),'月')` → "01月"~"12月" |
 | 条件隐藏行/列被同时加到 hidden.rows/cols | 设置后变成"始终隐藏"，条件不生效（永远隐藏） | 条件隐藏**只放** `hidden.conditions.rows` / `hidden.conditions.cols`，**禁止**同时往 `hidden.rows` / `hidden.cols` 列表里加同样的 key——`hidden.rows/cols` 是静态隐藏机制，与条件机制独立，混用会被引擎当成始终隐藏 |
 | hidden 范围 key 误用 0-based 物理位置 | 隐藏行/列错位（隐藏了表头而非数据行） | 范围 key 直接对应 `rows` / `cols` dict 的 **key 数字**，不是 0-based 物理位置：rows 从 `"1"` 开始时，rows["2"] → `"2:2"`；cols["2"] → `"2:2"`。详见 `references/misc-config.md` §「隐藏行与隐藏列」 |
+| **打印布局默认必须纵向（portrait）** | 用户打开打印设置发现勾选了「横向」而期望「纵向」 | 默认就是纵向，**不要传 `printConfig`**——`base_save` 内置默认 `{"paper":"A4","width":210,"height":297,"layout":"portrait",...}` 已正确。仅当用户**明确**说「横向打印 / 横向布局 / 横版」才覆盖 |
+| **横向打印误把 width/height 对调** | 设了 `width=297,height=210` 后，UI「像素宽高」显示与原生勾选横向不一致 | 实测对比 UI 原生勾选纵向 vs 横向两份空白报表：**纵横唯一区别就是 `layout` 字段**（`"portrait"` ↔ `"landscape"`），`width=210, height=297` **永远不变**——引擎按 layout 自行旋转。其他在 landscape 报表里看到的 watermark/header/footer/pagination 字段以及顶层 `dataRectWidth`/`excel_config_id` 都是 UI 其他操作的附带产物，与纵横切换无关，patch 时**不要补**。最小正确 patch：`design["printConfig"]["layout"] = "landscape"` 即可（其他字段一律保留原样） |
 
 ---
 
@@ -129,6 +136,7 @@
 | parallel_save_dbs deadlock | `Deadlock found when trying to get lock`，部分数据集失败 | 多数据集保存改为**串行** `[save_db(session, **a) for a in save_args]` |
 | 预调外部 API 验证字段 | 网络慢或超时，白等 | 直接按用户提供的字段写脚本，不预调 API |
 | YApi init_yapi() 后 create_mock 报"请登录" | `urllib` 多 Set-Cookie 头只取了第一条 | 已在 `yapi_mock.py` 修复；升级后可正常串联使用 |
+| 自写 urllib/requests 调 SIGNED_PATHS | `签名验证失败: 签名参数不存在` | **所有接口必须用 `session.request()` 或 `session.upload()`**；自写 urllib 不带 X-Sign/X-TIMESTAMP，`/queryFieldBySql`、`/executeSelectApi` 等 SIGNED_PATHS 直接返回 1001 签名错误 |
 | yapi_mock.create_mock 重复 path | `RuntimeError: 已存在的接口` 中断流程 | `yapi_mock.py` 已修复：errmsg 含「已存在」时自动复用 id |
 
 ---
@@ -211,6 +219,7 @@
 |----|------|------|
 | CEIL(n) / FLOOR(n) 无结果 | JimuReport 内置函数不含这两个 | 去掉；若需要取整只能用 `math.ceil()`/`math.floor()` |
 | UPPER/LOWER 内使用 `#{}` | 展开后变 `UPPER(Hello World)` 无引号，Aviator 解析失败 | 改用字符串字面量：`=UPPER('hello world')`；不要在 UPPER/LOWER 内用 `#{}` |
+| **字符串字段 `#{}` 未加单引号** | `=CONCAT(#{db.name}, ...)` → FreeMarker展开后变 `=CONCAT(张三, ...)`，Aviator 将 `张三` 识别为标识符变量→ null，整列显示 "null null" | **必须在 `#{}` 外加单引号**：`=CONCAT('#{db.name}', '#{db.city}')` → 展开后 `=CONCAT('张三', '深圳市')` → 正确。规则：凡是字符串字段用 `#{}` 绑定且在 Aviator 表达式里使用（CONCAT、IF 比较、CASE 等），外面都必须加 `'...'` 单引号；纯数字字段不受影响（`#{db.amount}` → `12345.67` 本身是合法数值字面量） |
 | 表达式列写 `=` 开头 | 后端将文本当公式求值 | 说明列去掉 `=` 前缀，只写 `ABS(-88.5)` 而非 `=ABS(-88.5)` |
 | FreeMarker 空值判断 | 条件不生效 | 用 `isNotEmpty(x)` 而非 `x??` 或 `x?has_content`；后两者无法过滤空串 `""` |
 | LIKE 模糊查询写法 | 绑定失败 | 必须 `LIKE CONCAT('%','${x}','%')`，不能 `LIKE '%${x}%'` |
@@ -218,6 +227,8 @@
 | 下拉控件 widgetType 用 "sel_search" | 控件渲染异常 | 下拉单选：`widgetType:"String"` + `searchMode:4`；下拉多选：`widgetType:"String"` + `searchMode:3` |
 | DBSUM/DBAVERAGE 不出数 | 预览结果为空 | `base_save` 必须同时传 `dbexps=["=DBSUM(ds.field)",...]`（见 §API接口 详解） |
 | `querySetting` 传 JSON 字符串 | `/save` 返回 success:true，但 `izOpenQueryBar/izDefaultQuery` 前端不生效（查询栏不展开等） | `base_save` override 时必须传 **dict**（如 `querySetting={"izOpenQueryBar": True, "izDefaultQuery": True}`），**禁止 `json.dumps()` 包成字符串**。GET 报表时 jsonStr 内嵌套显示为字符串是 jsonStr 二次 JSON 化的副产品，与 /save 入参格式无关 |
+| **`update_db` kwargs 用 snake_case** | 字段属性未更新，服务端 fieldList 保持原值（响应仍 success:true） | `update_db(**kwargs)` 内部直接 `db.update(kwargs)` 后 POST `/saveDb`；kwargs key 名必须与 API payload 字段名完全一致（camelCase）：`fieldList=`、`paramList=`、`dbDynSql=` 等，**禁止** `field_list=`、`param_list=` 等 snake_case 写法 |
+| **范围查询 `searchMode=2` widgetType 未匹配字段类型** | 查询栏不渲染最小/最大两个输入框，或日期范围显示为数字框 | `widgetType` 必须与字段实际数据类型一致：数值字段（成绩/年龄/金额）→ `"number"`；日期 → `"date"`；日期时间 → `"datetime"`；默认 `"String"` 不会渲染范围控件。`parse_sql` 返回的 widgetType 不可直接沿用，需按字段类型覆盖 |
 
 ---
 
@@ -283,6 +294,19 @@
 | groupRight 月份列头字母序错误 | "10月"排在"1月"前面（字母序："10月" < "1月"） | 月份字段用零填充：`CONCAT(LPAD(month_no,2,'0'),'月')` → "01月"~"12月"，字母序=时间序；不要用 `CONCAT(month_no,'月')` |
 | `make_designer` 参数顺序写错 | `make_designer(name, styles)` → `TypeError` 或 id 用了报表名 | 正确签名：`make_designer(report_id: str, name: str, **extra)`；新建报表 report_id 传空字符串 `""`：`make_designer("", REPORT_NAME)` |
 | `save_db` 参数名用了 `db_ch_name` | `TypeError: unexpected keyword argument 'db_ch_name'` | 正确位置参数顺序：`save_db(session, report_id, db_code, db_name, sql, field_list, ...)`；第4个参数名是 `db_name`，不是 `db_ch_name` |
+
+---
+
+## §套打背景图
+
+| 坑 | 现象 | 解决 |
+|----|------|------|
+| 套打图片放在 `printConfig.bgImg` | 设计器"套打设置"面板看不到图，打印/导出 PDF 也无背景 | **套打图片必须放在 `imgList`**，不是 `printConfig.bgImg`（该字段对套打无效）；`printConfig.bgImg` 保持空字符串即可 |
+| `imgList` 缺少 `commonBackend: True` | 图片后端 PDF 渲染有，但设计器预览看不到背景图 | `imgList` 条目必须同时设 `"isBackend": True`（后端渲染）和 `"commonBackend": True`（设计器预览显示），缺一不可 |
+| row0 单元格未加 `virtual` 键 | 图片与单元格脱钩，保存后背景图丢失或位置偏移 | row0 所有列的单元格（col 0 到 colspan-1）必须加 `"virtual": layer_id`，与 imgList 条目的 `layer_id` 一致 |
+| `virtualCellRange` 包含所有行列 | 数据量大时 JSON 体积膨胀 | `virtualCellRange` 只需列出 **row0 的所有列** `[[0,0],[0,1],...,[0,N-1]]`，不需要列出所有 rowspan 行 |
+
+> 完整代码模板见 `references/misc-config.md` §套打imgList配置
 | `base_save` 用关键字参数传 `report_id`/`designer` | `TypeError: missing positional argument 'designer_obj'` | `base_save` 前两个是位置参数：`base_save(report_id, designer_obj, **overrides)`；禁止写成 `base_save(report_id=..., designer=...)` |
 | 首次 `/save` 返回值当字符串用 | `str(resp["result"])` 得到整个 dict 的字符串表示 | `/save` 新建时 `resp["result"]` 是 **dict**，需要 `resp["result"]["id"]`；若 id 为 None 则用预生成的 `gen_id()` |
 | `rows` dict 缺 `"len"` key | 设计器列数/行数异常，图表位置偏移 | rows 必须带 `"len": 200`：`rows = {"len": 200, "1": {"height": 25, "cells": {}}, ...}` |

@@ -2,6 +2,12 @@
 jimureport_styles.py — 样式预设
 """
 
+STYLE_BASE   = 0  # 基础边框
+STYLE_DATA   = 1  # 数据行（居中+垂直居中）
+STYLE_HEADER = 2  # 表头（蓝底白字）
+STYLE_TITLE  = 3  # 大标题（淡蓝底深蓝加粗）
+STYLE_LINK   = 4  # 链接/钻取列（蓝色字体）
+
 
 def make_styles(border_color: str = "#d8d8d8") -> list[dict]:
     """
